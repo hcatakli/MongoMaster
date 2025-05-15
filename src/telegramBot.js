@@ -25,7 +25,7 @@ let isConnected = false;
 const userStates = {};
 
 // Telegram Bot Token
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '7138133334:AAGZDwfhKm-E3pqcCA7Cavrsv1-vIi1YI24';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 'YOUR_TELEGRAM_BOT_TOKEN';
 
 // Gemini API anahtarı
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "YOUR_GEMINI_API_KEY";
