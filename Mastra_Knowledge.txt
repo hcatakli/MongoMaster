@@ -1,0 +1,3705 @@
+TITLE: Initializing Mastra Class (TypeScript)
+DESCRIPTION: This snippet demonstrates how to initialize the Mastra class in TypeScript, showing both a basic initialization with default options and a more complete example illustrating how to configure various components like agents, workflows, logger, storage, tools, and vectors.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/reference/core/mastra-class.mdx#_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { Mastra } from "@mastra/core";
+import { createLogger } from "@mastra/core/logger";
+
+// Basic initialization
+export const mastra = new Mastra({});
+
+// Full initialization with all options
+export const mastra = new Mastra({
+  agents: {},
+  workflows: [],
+  integrations: [],
+  logger: createLogger({
+    name: "My Project",
+    level: "info",
+  }),
+  storage: {},
+  tools: {},
+  vectors: {},
+});
+```
+
+----------------------------------------
+
+TITLE: Building and Running the Content Moderation Workflow with TypeScript and Mastra
+DESCRIPTION: This snippet constructs the overall content moderation workflow by chaining the defined steps together and registering the workflow with Mastra. It includes a demonstration function that runs the workflow, manages human input for moderation decisions using Inquirer prompts, and resumes the workflow based on moderator feedback.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/examples/workflows/human-in-the-loop.mdx#2025-04-22_snippet_8
+
+LANGUAGE: typescript
+CODE:
+```
+// Build the workflow
+const contentModerationWorkflow = new Workflow({
+  name: 'content-moderation-workflow',
+  triggerSchema: z.object({
+    content: z.string(),
+  }),
+});
+
+contentModerationWorkflow
+  .step(analyzeContent)
+  .then(moderateContent)
+  .then(applyModeration)
+  .commit();
+
+// Register the workflow
+const mastra = new Mastra({
+  workflows: { contentModerationWorkflow },
+});
+
+// Example of using the workflow with Inquirer prompts
+async function runModerationDemo() {
+  const registeredWorkflow = mastra.getWorkflow('contentModerationWorkflow');
+  const run = registeredWorkflow.createRun();
+
+  // Start the workflow with content that needs review
+  console.log('Starting content moderation workflow...');
+  const result = await run.start({
+    triggerData: {
+      content: 'This is some user-generated content that requires moderation.'
+    }
+  });
+
+  const isReviewStepSuspended = result.activePaths.get('moderateContent')?.status === 'suspended';
+
+  // Check if workflow is suspended
+  if (isReviewStepSuspended) {
+    const { content, aiScore, flaggedCategories, message } = result.activePaths.get('moderateContent')?.suspendPayload;
+
+    console.log('\n===================================');
+    console.log(message);
+    console.log('===================================\n');
+
+    console.log('Content to review:');
+    console.log(content);
+    console.log(`\nAI Analysis Score: ${aiScore}`);
+    console.log(`Flagged Categories: ${flaggedCategories?.join(', ') || 'None'}\n`);
+
+    // Collect moderator decision using Inquirer
+    const moderatorDecision = await select({
+      message: 'Select your moderation decision:',
+      choices: [
+        { name: 'Approve content as is', value: 'approve' },
+        { name: 'Reject content completely', value: 'reject' },
+        { name: 'Modify content before publishing', value: 'modify' }
+      ],
+    });
+
+    // Collect additional information based on decision
+    let moderatorNotes = '';
+    let modifiedContent = '';
+
+    moderatorNotes = await input({
+      message: 'Enter any notes about your decision:',
+    });
+
+    if (moderatorDecision === 'modify') {
+      modifiedContent = await input({
+        message: 'Enter the modified content:',
+        default: content,
+      });
+    }
+
+    console.log('\nSubmitting your moderation decision...');
+
+    // Resume the workflow with the moderator's input
+    const resumeResult = await run.resume({
+      stepId: 'moderateContent',
+      context: {
+        moderatorDecision,
+        moderatorNotes,
+        modifiedContent,
+      },
+    });
+
+    if (resumeResult?.results?.applyModeration?.status === 'success') {
+      console.log('\n===================================');
+      console.log(`Moderation complete: ${resumeResult?.results?.applyModeration?.output.finalStatus}`);
+      console.log('===================================\n');
+
+      if (resumeResult?.results?.applyModeration?.output.content) {
+        console.log('Published content:');
+        console.log(resumeResult.results.applyModeration.output.content);
+      }
+    }
+
+    return resumeResult;
+  }
+
+  console.log('Workflow completed without requiring human intervention:', result.results);
+  return result;
+}
+
+// Helper function for AI content analysis simulation
+function simulateContentAnalysis(content: string): number {
+  // In a real application, this would call an AI service
+  // For the example, we're returning a random score
+  return Math.random();
+}
+
+// Invoke the demo function
+runModerationDemo().catch(console.error);
+```
+
+----------------------------------------
+
+TITLE: Implementing Weather-Based Activity Recommendation Workflow in TypeScript with Mastra
+DESCRIPTION: This code implements a complete Mastra workflow that fetches weather data from an external API and uses an AI agent to recommend activities based on the forecast. It defines an agent with specific instructions, creates workflow steps for fetching weather and planning activities, and coordinates them using Mastra's workflow system.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/examples/agents/agentic-workflows.mdx#2025-04-22_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { Mastra } from "@mastra/core";
+import { Agent } from "@mastra/core/agent";
+import { Step, Workflow } from "@mastra/core/workflows";
+import { z } from "zod";
+import { openai } from "@ai-sdk/openai";
+
+const agent = new Agent({
+  name: 'Weather Agent',
+  instructions: `
+        You are a local activities and travel expert who excels at weather-based planning. Analyze the weather data and provide practical activity recommendations.
+        For each day in the forecast, structure your response exactly as follows:
+        📅 [Day, Month Date, Year]
+        ═══════════════════════════
+        🌡️ WEATHER SUMMARY
+        • Conditions: [brief description]
+        • Temperature: [X°C/Y°F to A°C/B°F]
+        • Precipitation: [X% chance]
+        🌅 MORNING ACTIVITIES
+        Outdoor:
+        • [Activity Name] - [Brief description including specific location/route]
+          Best timing: [specific time range]
+          Note: [relevant weather consideration]
+        🌞 AFTERNOON ACTIVITIES
+        Outdoor:
+        • [Activity Name] - [Brief description including specific location/route]
+          Best timing: [specific time range]
+          Note: [relevant weather consideration]
+        🏠 INDOOR ALTERNATIVES
+        • [Activity Name] - [Brief description including specific venue]
+          Ideal for: [weather condition that would trigger this alternative]
+        ⚠️ SPECIAL CONSIDERATIONS
+        • [Any relevant weather warnings, UV index, wind conditions, etc.]
+        Guidelines:
+        - Suggest 2-3 time-specific outdoor activities per day
+        - Include 1-2 indoor backup options
+        - For precipitation >50%, lead with indoor activities
+        - All activities must be specific to the location
+        - Include specific venues, trails, or locations
+        - Consider activity intensity based on temperature
+        - Keep descriptions concise but informative
+        Maintain this exact formatting for consistency, using the emoji and section headers as shown.
+      `,
+  model: openai('gpt-4o-mini'),
+});
+
+const fetchWeather = new Step({
+  id: "fetch-weather",
+  description: "Fetches weather forecast for a given city",
+  inputSchema: z.object({
+    city: z.string().describe("The city to get the weather for"),
+  }),
+  execute: async ({ context }) => {
+    const triggerData = context?.getStepResult<{
+      city: string;
+    }>("trigger");
+
+    if (!triggerData) {
+      throw new Error("Trigger data not found");
+    }
+
+    const geocodingUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(triggerData.city)}&count=1`;
+    const geocodingResponse = await fetch(geocodingUrl);
+    const geocodingData = await geocodingResponse.json();
+
+    if (!geocodingData.results?.[0]) {
+      throw new Error(`Location '${triggerData.city}' not found`);
+    }
+
+    const { latitude, longitude, name } = geocodingData.results[0];
+
+    const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_mean,weathercode&timezone=auto`;
+    const response = await fetch(weatherUrl);
+    const data = await response.json();
+
+    const forecast = data.daily.time.map((date: string, index: number) => ({
+      date,
+      maxTemp: data.daily.temperature_2m_max[index],
+      minTemp: data.daily.temperature_2m_min[index],
+      precipitationChance: data.daily.precipitation_probability_mean[index],
+      condition: getWeatherCondition(data.daily.weathercode[index]),
+      location: name,
+    }));
+
+    return forecast;
+  },
+});
+
+const forecastSchema = z.array(
+  z.object({
+    date: z.string(),
+    maxTemp: z.number(),
+    minTemp: z.number(),
+    precipitationChance: z.number(),
+    condition: z.string(),
+    location: z.string(),
+  }),
+);
+
+const planActivities = new Step({
+  id: "plan-activities",
+  description: "Suggests activities based on weather conditions",
+  inputSchema: forecastSchema,
+  execute: async ({ context, mastra }) => {
+    const forecast =
+      context?.getStepResult<z.infer<typeof forecastSchema>>(
+        "fetch-weather",
+      );
+
+    if (!forecast) {
+      throw new Error("Forecast data not found");
+    }
+
+    const prompt = `Based on the following weather forecast for ${forecast[0].location}, suggest appropriate activities:
+      ${JSON.stringify(forecast, null, 2)}
+      `;
+
+    const response = await agent.stream([
+      {
+        role: "user",
+        content: prompt,
+      },
+    ]);
+
+    let activitiesText = '';
+    
+    for await (const chunk of response.textStream) {
+      process.stdout.write(chunk);
+      activitiesText += chunk;
+    }
+
+    return {
+      activities: activitiesText,
+    };
+  },
+});
+
+function getWeatherCondition(code: number): string {
+  const conditions: Record<number, string> = {
+    0: "Clear sky",
+    1: "Mainly clear",
+    2: "Partly cloudy",
+    3: "Overcast",
+    45: "Foggy",
+    48: "Depositing rime fog",
+    51: "Light drizzle",
+    53: "Moderate drizzle",
+    55: "Dense drizzle",
+    61: "Slight rain",
+    63: "Moderate rain",
+    65: "Heavy rain",
+    71: "Slight snow fall",
+    73: "Moderate snow fall",
+    75: "Heavy snow fall",
+    95: "Thunderstorm",
+  };
+  return conditions[code] || "Unknown";
+}
+
+const weatherWorkflow = new Workflow({
+  name: "weather-workflow",
+  triggerSchema: z.object({
+    city: z.string().describe("The city to get the weather for"),
+  }),
+})
+  .step(fetchWeather)
+  .then(planActivities);
+
+weatherWorkflow.commit();
+
+const mastra = new Mastra({
+  workflows: {
+    weatherWorkflow,
+  },
+});
+
+async function main() {
+  const { start } = mastra.getWorkflow("weatherWorkflow").createRun();
+
+  const result = await start({
+    triggerData: {
+      city: "London",
+    },
+  });
+
+  console.log("\n \n");
+  console.log(result);
+}
+
+main();
+```
+
+----------------------------------------
+
+TITLE: Defining AI Content Generation Step with Suspension in TypeScript
+DESCRIPTION: This code defines a step that simulates AI content generation and handles potential suspension for human guidance. It takes user input and an optional `guidance` as input.  The `execute` function generates an initial draft, checks its confidence score, and suspends the workflow if the score is low and no `guidance` is provided. Upon resumption with human guidance, the function enhances the generated content using the provided guidance and returns the improved output.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/examples/workflows/suspend-and-resume.mdx#2025-04-22_snippet_1
+
+LANGUAGE: typescript
+CODE:
+```
+// Step 2: Generate content with AI (may suspend for human guidance)
+const promptAgent = new Step({
+  id: 'promptAgent',
+  inputSchema: z.object({
+    guidance: z.string(),
+  }),
+  execute: async ({ context, suspend }) => {
+    const userInput = context.getStepResult(getUserInput)?.userInput;
+    console.log(`Generating content based on: ${userInput}`);
+
+    const guidance = context.inputData?.guidance;
+
+    // Simulate AI generating content
+    const initialDraft = generateInitialDraft(userInput);
+
+    // If confidence is high, return the generated content directly
+    if (initialDraft.confidenceScore > 0.7) {
+      return { modelOutput: initialDraft.content };
+    }
+
+    console.log('Low confidence in generated content, suspending for human guidance', {guidance});
+
+    // If confidence is low, suspend for human guidance
+    if (!guidance) {
+      // only suspend if no guidance is provided
+      await suspend();
+      return undefined;
+    }
+
+    // This code runs after resume with human guidance
+    console.log('Resumed with human guidance');
+
+    // Use the human guidance to improve the output
+    return {
+      modelOutput: enhanceWithGuidance(initialDraft.content, guidance),
+    };
+  },
+  outputSchema: z.object({ modelOutput: z.string() }).optional(),
+});
+```
+
+----------------------------------------
+
+TITLE: Executing Workflow and Processing Results (TypeScript)
+DESCRIPTION: Details the steps to initiate a workflow run using `createRun()`, start it with `start()` and input data, and access the results. It covers accessing individual step results and handling the different possible statuses of the workflow execution (`success`, `suspended`, `failed`), including how to resume a suspended run.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/docs/workflows-vnext/overview.mdx#_snippet_6
+
+LANGUAGE: typescript
+CODE:
+```
+// Create a run instance
+const run = myWorkflow.createRun();
+
+// Start the workflow with input data
+const result = await run.start({
+  inputData: {
+    startValue: "initial data",
+  },
+});
+
+// Access the results
+console.log(result.steps); // All step results
+console.log(result.steps["step-id"].output); // Output from a specific step
+
+if (result.status === "success") {
+  console.log(result.result); // The final result of the workflow, result of the last step (or `.map()` output, if used as last step)
+} else if (result.status === "suspended") {
+  const resumeResult = await run.resume({
+    step: result.suspended[0], // there is always at least one step id in the suspended array, in this case we resume the first suspended execution path
+    resumeData: {
+      /* user input */
+    },
+  });
+} else if (result.status === "failed") {
+  console.error(result.error); // only exists if status is failed, this is an instance of Error
+}
+```
+
+----------------------------------------
+
+TITLE: Creating a Workflow Step with Schemas and Execute Function | Mastra vNext | Typescript
+DESCRIPTION: Demonstrates how to define a step using `createStep`. It includes configuration for a unique `id`, a `description`, and Zod schemas for `inputSchema`, `outputSchema`, `resumeSchema`, and `suspendSchema`. The `execute` function is an asynchronous callback that contains the step's logic, receiving a context object with input data, Mastra services, and utility functions.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/docs/workflows-vnext/overview.mdx#_snippet_1
+
+LANGUAGE: typescript
+CODE:
+```
+const myStep = createStep({
+  id: "my-step",
+  description: "Does something useful",
+  inputSchema: z.object({
+    inputValue: z.string(),
+  }),
+  outputSchema: z.object({
+    outputValue: z.string(),
+  }),
+  resumeSchema: z.object({
+    resumeValue: z.string(),
+  }),
+  suspendSchema: z.object({
+    suspendValue: z.string(),
+  }),
+  execute: async ({
+    inputData,
+    mastra,
+    getStepResult,
+    getInitData,
+    runtimeContext,
+  }) => {
+    const otherStepOutput = getStepResult(step2);
+    const initData = getInitData<typeof workflow>(); // typed as the workflow input schema
+    return {
+      outputValue: `Processed: ${inputData.inputValue}, ${initData.startValue} (runtimeContextValue: ${runtimeContext.get("runtimeContextValue")})`,
+    };
+  },
+});
+```
+
+----------------------------------------
+
+TITLE: Getting Agent and Generating Response
+DESCRIPTION: Shows how to obtain a reference to a specific agent using its ID and then use the agent's 'generate' method to get a response based on a list of messages.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/docs/deployment/client.mdx#_snippet_5
+
+LANGUAGE: typescript
+CODE:
+```
+// Get a reference to your local agent
+const agent = client.getAgent("dev-agent-id");
+
+// Generate responses
+const response = await agent.generate({
+  messages: [
+    {
+      role: "user",
+      content: "Hello, I'm testing the local development setup!"
+    }
+  ]
+});
+```
+
+----------------------------------------
+
+TITLE: Using LibSQLVector for Vector Storage
+DESCRIPTION: This code snippet demonstrates how to use the LibSQLVector class to create, populate, and query a vector store. It covers initializing the vector store, creating an index, adding vectors with metadata, and querying for similar vectors using cosine similarity.  Configuration for filtering and result inclusion is also shown.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/stores/libsql/README.md#_snippet_1
+
+LANGUAGE: typescript
+CODE:
+```
+import { LibSQLVector } from '@mastra/libsql';
+
+const vectorStore = new LibSQLVector({
+  url: 'file:./my-db.db'
+});
+
+// Create a new table with vector support
+await vectorStore.createIndex({
+  indexName: 'my_vectors',
+  dimension: 1536,
+  metric: 'cosine',
+});
+
+// Add vectors
+const ids = await vectorStore.upsert({
+  indexName: 'my_vectors',
+  vectors: [[0.1, 0.2, ...], [0.3, 0.4, ...]],
+  metadata: [{ text: 'doc1' }, { text: 'doc2' }],
+});
+
+// Query vectors
+const results = await vectorStore.query({
+  indexName: 'my_vectors',
+  queryVector: [0.1, 0.2, ...],
+  topK: 10, // topK
+  filter: { text: 'doc1' }, // filter
+  includeVector: false, // includeVector
+  minScore: 0.5, // minScore
+});
+```
+
+----------------------------------------
+
+TITLE: Registering Agent in Mastra Entry Point (TypeScript)
+DESCRIPTION: TypeScript code creating the main `Mastra` instance in `src/mastra/index.ts`. It imports the `weatherAgent` and registers it within the `agents` configuration object, making it available to the Mastra framework.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/docs/getting-started/installation.mdx#_snippet_4
+
+LANGUAGE: TypeScript
+CODE:
+```
+import { Mastra } from "@mastra/core";
+
+import { weatherAgent } from "./agents/weather";
+
+export const mastra = new Mastra({
+  agents: { weatherAgent }
+});
+```
+
+----------------------------------------
+
+TITLE: AgentNetwork Constructor in TypeScript
+DESCRIPTION: This code snippet shows the constructor signature for the AgentNetwork class. It takes a configuration object (`AgentNetworkConfig`) as input, which includes the network's name, instructions for the routing agent, the language model to use for routing, and an array of specialized agents.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/reference/networks/agent-network.mdx#_snippet_1
+
+LANGUAGE: typescript
+CODE:
+```
+constructor(config: AgentNetworkConfig)
+```
+
+----------------------------------------
+
+TITLE: Initialize Mastra Instance and PgVector Store (TypeScript)
+DESCRIPTION: Initializes the main `Mastra` instance, registering the previously defined `researchAgent` and setting up the `PgVector` store using the provided database connection string from environment variables. This connects the agent to the vector database.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/guides/guide/research-assistant.mdx#_snippet_4
+
+LANGUAGE: ts
+CODE:
+```
+import { Mastra } from '@mastra/core';
+import { PgVector } from '@mastra/pg';
+
+import { researchAgent } from './agents/researchAgent';
+
+// Initialize Mastra instance
+const pgVector = new PgVector(process.env.POSTGRES_CONNECTION_STRING!);
+export const mastra = new Mastra({
+  agents: { researchAgent },
+  vectors: { pgVector },
+});
+```
+
+----------------------------------------
+
+TITLE: Register Agents and Workflows with Mastra - TypeScript
+DESCRIPTION: This snippet initializes the Mastra core instance, registering the defined agents (travelAgent, summaryAgent) and workflows (weatherWorkflow). This registration is essential for the workflow to be able to access and utilize the agents during execution. It also configures a logger for the instance.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/examples/workflows_vNext/human-in-the-loop.mdx#_snippet_2
+
+LANGUAGE: typescript
+CODE:
+```
+import { Mastra } from '@mastra/core/mastra'
+import { createLogger } from '@mastra/core/logger'
+import { weatherWorkflow } from './workflows'
+import { travelAgent, summaryAgent } from './agents'
+
+const mastra = new Mastra({
+  vnext_workflows: {
+    weatherWorkflow,
+  },
+  agents: {
+    travelAgent,
+	  summaryAgent
+  },
+  logger: createLogger({
+    name: 'Mastra',
+    level: 'info',
+  }),
+})
+
+export { mastra }
+```
+
+----------------------------------------
+
+TITLE: Quick Start with Mastra Client in TypeScript
+DESCRIPTION: Basic example of initializing the Mastra client and using it to interact with an agent to generate a response. Shows the primary workflow of setting up the client and making a simple API call.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/client-sdks/client-js/README.md#2025-04-22_snippet_1
+
+LANGUAGE: typescript
+CODE:
+```
+import { MastraClient } from '@mastra/client';
+
+// Initialize the client
+const client = new MastraClient({
+  baseUrl: 'http://localhost:4111', // Your Mastra API endpoint
+});
+
+// Example: Working with an Agent
+async function main() {
+  // Get an agent instance
+  const agent = client.getAgent('your-agent-id');
+
+  // Generate a response
+  const response = await agent.generate({
+    messages: [{ role: 'user', content: "What's the weather like today?" }],
+  });
+
+  console.log(response);
+}
+```
+
+----------------------------------------
+
+TITLE: Launching Mastra Dev Server (Bash)
+DESCRIPTION: This command launches the Mastra local development environment server. By default, it runs on http://localhost:4111, but the host and port can be customized via configuration.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/docs/local-dev/mastra-dev.mdx#_snippet_0
+
+LANGUAGE: bash
+CODE:
+```
+mastra dev
+```
+
+----------------------------------------
+
+TITLE: Starting Mastra Development Server (Bash)
+DESCRIPTION: Runs the `mastra dev` command to start the local development server. This makes the configured agents, such as the 'researchAgent', available via a REST API endpoint, typically at `http://localhost:4111/api/agents/{agentName}/generate`.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/guides/guide/research-assistant.mdx#_snippet_11
+
+LANGUAGE: Bash
+CODE:
+```
+mastra dev
+```
+
+----------------------------------------
+
+TITLE: Generate Structured Data with Zod (TypeScript)
+DESCRIPTION: Illustrates how to guide the agent to generate structured output (a recipe) by providing a Zod schema. The agent's response is parsed into a JavaScript object matching the schema.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/guides/guide/chef-michel.mdx#_snippet_6
+
+LANGUAGE: ts
+CODE:
+```
+import { z } from "zod";
+
+async function main() {
+  const query =
+    "I want to make lasagna, can you generate a lasagna recipe for me?";
+  console.log(`Query: ${query}`);
+
+  // Define the Zod schema
+  const schema = z.object({
+    ingredients: z.array(
+      z.object({
+        name: z.string(),
+        amount: z.string(),
+      }),
+    ),
+    steps: z.array(z.string()),
+  });
+
+  const response = await chefAgent.generate(
+    [{ role: "user", content: query }],
+    { output: schema },
+  );
+  console.log("\n👨‍🍳 Chef Michel:", response.object);
+}
+
+main();
+```
+
+----------------------------------------
+
+TITLE: Using a Memory-Enabled Agent across Multiple Conversations
+DESCRIPTION: Demonstrates how to use a memory-enabled agent across multiple conversation turns. This example shows creating a thread, interacting with the agent, and retrieving context from previous interactions using memory options to maintain conversational continuity.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/examples/memory/memory-with-pg.mdx#2025-04-22_snippet_1
+
+LANGUAGE: typescript
+CODE:
+```
+import { randomUUID } from "crypto";
+
+// Start a conversation
+const threadId = randomUUID();
+const resourceId = "SOME_USER_ID";
+
+// Ask about ingredients
+const response1 = await chefAgent.stream(
+  "In my kitchen I have: pasta, canned tomatoes, garlic, olive oil, and some dried herbs (basil and oregano). What can I make?",
+  {
+    threadId,
+    resourceId,
+  },
+);
+
+// Ask about different ingredients
+const response2 = await chefAgent.stream(
+  "Now I'm over at my friend's house, and they have: chicken thighs, coconut milk, sweet potatoes, and curry powder.",
+  {
+    threadId,
+    resourceId,
+  },
+);
+
+// Use memory to recall previous conversation
+const response3 = await chefAgent.stream(
+  "What did we cook before I went to my friends house?",
+  {
+    threadId,
+    resourceId,
+    memoryOptions: {
+      lastMessages: 3, // Get last 3 messages for context
+    },
+  },
+);
+```
+
+----------------------------------------
+
+TITLE: Creating and Integrating a Custom Tool in a Mastra Workflow (TypeScript)
+DESCRIPTION: This code defines a custom tool using `@mastra/core/tools` to crawl a webpage and extract text content. It specifies input and output schemas using `zod` for validation. The tool is then integrated into a workflow created with `@mastra/core/workflows` and executed with a sample URL. The final result is logged to the console.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/examples/workflows/using-a-tool-as-a-step.mdx#_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { createTool } from '@mastra/core/tools';
+import { Workflow } from '@mastra/core/workflows';
+import { z } from 'zod';
+
+const crawlWebpage = createTool({
+  id: 'Crawl Webpage',
+  description: 'Crawls a webpage and extracts the text content',
+  inputSchema: z.object({
+    url: z.string().url(),
+  }),
+  outputSchema: z.object({
+    rawText: z.string(),
+  }),
+  execute: async ({ context }) => {
+    const response = await fetch(context.triggerData.url);
+    const text = await response.text();
+    return { rawText: 'This is the text content of the webpage: ' + text };
+  },
+});
+
+const contentWorkflow = new Workflow({ name: 'content-review' });
+
+contentWorkflow.step(crawlWebpage).commit();
+
+const { start } = contentWorkflow.createRun();
+
+const res = await start({ triggerData: { url: 'https://example.com'} });
+
+console.log(res.results);
+```
+
+----------------------------------------
+
+TITLE: Importing Workflow Functions and Schema Library | Mastra vNext | Typescript
+DESCRIPTION: Imports the core functions `createWorkflow` and `createStep` from the Mastra vNext workflow module. It also imports the `z` object from the Zod library, which is used extensively for defining data schemas for workflow inputs, outputs, and state management.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/docs/workflows-vnext/overview.mdx#_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { createWorkflow, createStep } from "@mastra/core/workflows/vNext";
+import { z } from "zod"; // For schema validation
+```
+
+----------------------------------------
+
+TITLE: Define Planning Agent - Mastra/TypeScript
+DESCRIPTION: Defines a Mastra Agent named 'planningAgent' using the OpenAI 'gpt-4o' model. This agent is configured with detailed instructions to act as a local activities and travel expert, analyzing weather data to provide structured, time-specific activity recommendations and indoor alternatives.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/examples/workflows_vNext/parallel-steps.mdx#_snippet_0
+
+LANGUAGE: ts
+CODE:
+```
+import { Agent } from '@mastra/core/agent'
+import { openai } from '@ai-sdk/openai'
+
+const llm = openai('gpt-4o')
+
+const planningAgent = new Agent({
+  name: 'planningAgent',
+  model: llm,
+  instructions: `
+        You are a local activities and travel expert who excels at weather-based planning. Analyze the weather data and provide practical activity recommendations.
+
+        📅 [Day, Month Date, Year]
+        ═══════════════════════════
+
+        🌡️ WEATHER SUMMARY
+        • Conditions: [brief description]
+        • Temperature: [X°C/Y°F to A°C/B°F]
+        • Precipitation: [X% chance]
+
+        🌅 MORNING ACTIVITIES
+        Outdoor:
+        • [Activity Name] - [Brief description including specific location/route]
+          Best timing: [specific time range]
+          Note: [relevant weather consideration]
+
+        🌞 AFTERNOON ACTIVITIES
+        Outdoor:
+        • [Activity Name] - [Brief description including specific location/route]
+          Best timing: [specific time range]
+          Note: [relevant weather consideration]
+
+        🏠 INDOOR ALTERNATIVES
+        • [Activity Name] - [Brief description including specific venue]
+          Ideal for: [weather condition that would trigger this alternative]
+
+        ⚠️ SPECIAL CONSIDERATIONS
+        • [Any relevant weather warnings, UV index, wind conditions, etc.]
+
+        Guidelines:
+        - Suggest 2-3 time-specific outdoor activities per day
+        - Include 1-2 indoor backup options
+        - For precipitation >50%, lead with indoor activities
+        - All activities must be specific to the location
+        - Include specific venues, trails, or locations
+        - Consider activity intensity based on temperature
+        - Keep descriptions concise but informative
+
+        Maintain this exact formatting for consistency, using the emoji and section headers as shown.
+      `,
+})
+
+export { planningAgent }
+```
+
+----------------------------------------
+
+TITLE: Initializing Mastra Client - TypeScript
+DESCRIPTION: Explains how to create a new instance of the MastraClient using the @mastra/client-js SDK. This is the first step to interact with the Mastra platform tools.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/reference/client-js/tools.mdx#_snippet_0
+
+LANGUAGE: TypeScript
+CODE:
+```
+import { MastraClient } from "@mastra/client-js";
+
+const client = new MastraClient();
+```
+
+----------------------------------------
+
+TITLE: Complete Chunking and Embedding Pipeline | Mastra RAG & AI SDK | TypeScript
+DESCRIPTION: Provides a full example demonstrating the process of initializing a MDocument, chunking it, and generating embeddings using either OpenAI or Cohere providers via the `ai` SDK's `embedMany` function, ready for storage in a vector database.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/docs/rag/chunking-and-embedding.mdx#_snippet_6
+
+LANGUAGE: TypeScript
+CODE:
+```
+import { embedMany } from "ai";
+import { openai } from "@ai-sdk/openai";
+import { cohere } from "@ai-sdk/cohere";
+
+import { MDocument } from "@mastra/rag";
+
+// Initialize document
+const doc = MDocument.fromText(`
+  Climate change poses significant challenges to global agriculture.
+  Rising temperatures and changing precipitation patterns affect crop yields.
+`);
+
+// Create chunks
+const chunks = await doc.chunk({
+  strategy: "recursive",
+  size: 256,
+  overlap: 50,
+});
+
+// Generate embeddings with OpenAI
+const { embeddings: openAIEmbeddings } = await embedMany({
+  model: openai.embedding('text-embedding-3-small'),
+  values: chunks.map(chunk => chunk.text),
+});
+
+// OR
+
+// Generate embeddings with Cohere
+const { embeddings: cohereEmbeddings } = await embedMany({
+  model: cohere.embedding('embed-english-v3.0'),
+  values: chunks.map(chunk => chunk.text),
+});
+
+// Store embeddings in your vector database
+await vectorStore.upsert({
+  indexName: "embeddings",
+  vectors: embeddings,
+});
+```
+
+----------------------------------------
+
+TITLE: Defining a Basic Sequential Workflow (Mastra vNext)
+DESCRIPTION: Demonstrates how to define a simple sequential workflow in Mastra vNext using `createWorkflow` and chaining steps with `.then()`. Includes input and output schema definitions.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/packages/core/src/workflows/vNext/README.md#_snippet_44
+
+LANGUAGE: TypeScript
+CODE:
+```
+const weatherWorkflow = createWorkflow({
+  steps: [fetchWeather, planActivities],
+  id: 'weather-workflow-step1-single-day',
+  inputSchema: z.object({
+    city: z.string().describe('The city to get the weather for'),
+  }),
+  outputSchema: z.object({
+    activities: z.string(),
+  }),
+})
+  .then(fetchWeather)
+  .then(planActivities);
+
+weatherWorkflow.commit();
+```
+
+----------------------------------------
+
+TITLE: Composing Parent Workflow with Cloned Steps/Workflows (TypeScript)
+DESCRIPTION: Illustrates how to import core workflow utilities and define a parent workflow that sequences an existing workflow, a step, and their respective cloned versions, demonstrating how cloning enables reuse within a complex workflow structure.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/docs/workflows-vnext/overview.mdx#_snippet_5
+
+LANGUAGE: typescript
+CODE:
+```
+import {
+  createWorkflow,
+  createStep,
+  cloneStep,
+  cloneWorkflow,
+} from "@mastra/core/workflows/vNext";
+
+const myWorkflow = createWorkflow({
+  id: "my-workflow",
+  steps: [step1, step2, step3],
+});
+myWorkflow.then(step1).then(step2).then(step3).commit();
+
+const parentWorkflow = createWorkflow({
+  id: "parent-workflow",
+  steps: [myWorkflow, step4],
+});
+parentWorkflow
+  .then(myWorkflow)
+  .then(step4)
+  .then(cloneWorkflow(myWorkflow, { id: "cloned-workflow" }))
+  .then(cloneStep(step4, { id: "cloned-step-4" }))
+  .commit();
+```
+
+----------------------------------------
+
+TITLE: Installing Mastra Core Package
+DESCRIPTION: Command to install the @mastra/core package using npm
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/packages/core/README.md#2025-04-22_snippet_0
+
+LANGUAGE: bash
+CODE:
+```
+npm install @mastra/core
+```
+
+----------------------------------------
+
+TITLE: Building and Running Content Moderation Workflow (TypeScript)
+DESCRIPTION: This code snippet builds and runs the content moderation workflow using Mastra, integrating Zod for schema definition. It defines a workflow named 'content-moderation-workflow' with steps for analysis, moderation, and applying moderation actions. The code also includes a function to simulate AI content analysis and an example of how to start, suspend, and resume the workflow with user inputs using Inquirer prompts.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/examples/workflows/human-in-the-loop.mdx#2025-04-22_snippet_7
+
+LANGUAGE: typescript
+CODE:
+```
+// Build the workflow
+const contentModerationWorkflow = new Workflow({
+  name: 'content-moderation-workflow',
+  triggerSchema: z.object({
+    content: z.string(),
+  }),
+});
+
+contentModerationWorkflow
+  .step(analyzeContent)
+  .then(moderateContent)
+  .then(applyModeration)
+  .commit();
+
+// Register the workflow
+const mastra = new Mastra({
+  workflows: { contentModerationWorkflow },
+});
+
+// Example of using the workflow with Inquirer prompts
+async function runModerationDemo() {
+  const registeredWorkflow = mastra.getWorkflow('contentModerationWorkflow');
+  const run = registeredWorkflow.createRun();
+
+  // Start the workflow with content that needs review
+  console.log('Starting content moderation workflow...');
+  const result = await run.start({
+    triggerData: {
+      content: 'This is some user-generated content that requires moderation.'
+    }
+  });
+
+  const isReviewStepSuspended = result.activePaths.get('moderateContent')?.status === 'suspended';
+
+  // Check if workflow is suspended
+  if (isReviewStepSuspended) {
+    const { content, aiScore, flaggedCategories, message } = result.activePaths.get('moderateContent')?.suspendPayload;
+
+    console.log('\n===================================');
+    console.log(message);
+    console.log('===================================\n');
+
+    console.log('Content to review:');
+    console.log(content);
+    console.log(`\nAI Analysis Score: ${aiScore}`);
+    console.log(`Flagged Categories: ${flaggedCategories?.join(', ') || 'None'}\n`);
+
+    // Collect moderator decision using Inquirer
+    const moderatorDecision = await select({
+      message: 'Select your moderation decision:',
+      choices: [
+        { name: 'Approve content as is', value: 'approve' },
+        { name: 'Reject content completely', value: 'reject' },
+        { name: 'Modify content before publishing', value: 'modify' }
+      ],
+    });
+
+    // Collect additional information based on decision
+    let moderatorNotes = '';
+    let modifiedContent = '';
+
+    moderatorNotes = await input({
+      message: 'Enter any notes about your decision:',
+    });
+
+    if (moderatorDecision === 'modify') {
+      modifiedContent = await input({
+        message: 'Enter the modified content:',
+        default: content,
+      });
+    }
+
+    console.log('\nSubmitting your moderation decision...');
+
+    // Resume the workflow with the moderator's input
+    const resumeResult = await run.resume({
+      stepId: 'moderateContent',
+      context: {
+        moderatorDecision,
+        moderatorNotes,
+        modifiedContent,
+      },
+    });
+
+    if (resumeResult?.results?.applyModeration?.status === 'success') {
+      console.log('\n===================================');
+      console.log(`Moderation complete: ${resumeResult?.results?.applyModeration?.output.finalStatus}`);
+      console.log('===================================\n');
+
+      if (resumeResult?.results?.applyModeration?.output.content) {
+        console.log('Published content:');
+        console.log(resumeResult.results.applyModeration.output.content);
+      }
+    }
+
+    return resumeResult;
+  }
+
+  console.log('Workflow completed without requiring human intervention:', result.results);
+  return result;
+}
+
+// Helper function for AI content analysis simulation
+function simulateContentAnalysis(content: string): number {
+  // In a real application, this would call an AI service
+  // For the example, we're returning a random score
+  return Math.random();
+}
+
+// Invoke the demo function
+runModerationDemo().catch(console.error);
+```
+
+----------------------------------------
+
+TITLE: Creating a Simple Workflow in Mastra
+DESCRIPTION: This code defines a simple workflow named 'my-workflow' with a single step. It utilizes the `@mastra/core/workflows` library for defining the workflow and step. The `zod` library is used for schema validation of input and output data. The workflow takes a number as input, doubles it in the step, and returns the doubled value. The `createRun` function is then used to run the workflow.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/examples/workflows/creating-a-workflow.mdx#_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { Step, Workflow } from "@mastra/core/workflows";
+import { z } from "zod";
+
+const myWorkflow = new Workflow({
+  name: "my-workflow",
+  triggerSchema: z.object({
+    input: z.number(),
+  }),
+});
+
+const stepOne = new Step({
+  id: "stepOne",
+  inputSchema: z.object({
+    value: z.number(),
+  }),
+  outputSchema: z.object({
+    doubledValue: z.number(),
+  }),
+  execute: async ({ context }) => {
+    const doubledValue = context?.triggerData?.input * 2;
+    return { doubledValue };
+  },
+});
+
+myWorkflow.step(stepOne).commit();
+
+const { runId, start } = myWorkflow.createRun();
+
+const res = await start({
+  triggerData: { input: 90 },
+});
+
+console.log(res.results);
+```
+
+----------------------------------------
+
+TITLE: Configuring Real-time Voice Provider with Instructions in TypeScript
+DESCRIPTION: This example demonstrates how to initialize a real-time voice provider from OpenAI, create an agent with the voice provider, and add specific behavioral instructions using the addInstructions() method before connecting to the service.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/reference/voice/voice.addInstructions.mdx#2025-04-22_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { OpenAIRealtimeVoice } from "@mastra/voice-openai-realtime";
+import { Agent } from "@mastra/core/agent";
+import { openai } from "@ai-sdk/openai";
+
+// Initialize a real-time voice provider
+const voice = new OpenAIRealtimeVoice({
+  realtimeConfig: {
+    model: "gpt-4o-mini-realtime",
+    apiKey: process.env.OPENAI_API_KEY,
+  },
+});
+
+// Create an agent with the voice provider
+const agent = new Agent({
+  name: "Customer Support Agent",
+  instructions: "You are a helpful customer support agent for a software company.",
+  model: openai("gpt-4o"),
+  voice,
+});
+
+// Add additional instructions to the voice provider
+voice.addInstructions(`
+  When speaking to customers:
+  - Always introduce yourself as the customer support agent
+  - Speak clearly and concisely
+  - Ask clarifying questions when needed
+  - Summarize the conversation at the end
+`);
+
+// Connect to the real-time service
+await voice.connect();
+```
+
+----------------------------------------
+
+TITLE: Defining Editor Agent and Tool in Typescript
+DESCRIPTION: This snippet defines an 'Editor' agent for refining blog post content. It utilizes the OpenAI gpt-4o-mini model.  A tool is defined to enable other agents to call the editor, providing a blog post copy and receiving an edited version.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/examples/agents/hierarchical-multi-agent.mdx#_snippet_1
+
+LANGUAGE: typescript
+CODE:
+```
+const editorAgent = new Agent({
+  name: "Editor",
+  instructions: "あなたはブログ投稿のコピーを編集するエディターエージェントです。",
+  model: openai("gpt-4o-mini"),
+});
+
+const editorTool = createTool({
+  id: "editor-agent",
+  description: "ブログ投稿のコピーを編集するためにエディターエージェントを呼び出します。",
+  inputSchema: z.object({
+    copy: z.string().describe("ブログ投稿のコピー"),
+  }),
+  outputSchema: z.object({
+    copy: z.string().describe("編集されたブログ投稿のコピー"),
+  }),
+  execute: async ({ context }) => {
+    const result = await editorAgent.generate(
+      `Edit the following blog post only returning the edited copy: ${context.copy}`,
+    );
+    return { copy: result.text };
+  },
+});
+```
+
+----------------------------------------
+
+TITLE: Initialize Mastra Client - Mastra Client JS - TypeScript
+DESCRIPTION: Imports and initializes the MastraClient using the `@mastra/client-js` SDK. This is the first step to interact with the Mastra API.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/reference/client-js/agents.mdx#_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { MastraClient } from "@mastra/client-js";
+
+const client = new MastraClient();
+```
+
+----------------------------------------
+
+TITLE: Registering Event Listener for Errors
+DESCRIPTION: This example demonstrates how to register an event listener for the 'error' event on a voice provider. The callback function receives an object containing the error message, code, and details, which are then logged to the console.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/reference/voice/voice.on.mdx#2025-04-22_snippet_2
+
+LANGUAGE: typescript
+CODE:
+```
+// Register event listener for errors
+voice.on("error", ({ message, code, details }) => {
+  console.error(`Error ${code}: ${message}`, details);
+});
+```
+
+----------------------------------------
+
+TITLE: Configuring Branching Paths in Mastra Workflow
+DESCRIPTION: This snippet shows how to configure a workflow with branching paths using Mastra. It demonstrates creating parallel branches, chaining steps within each branch, and merging the branches using the compound .after([]) syntax. The example also includes executing the workflow and logging the result.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/examples/workflows/branching-paths.mdx#2025-04-22_snippet_1
+
+LANGUAGE: typescript
+CODE:
+```
+// Create two parallel branches
+myWorkflow
+  // First branch
+  .step(stepOne)
+  .then(stepTwo)
+
+  // Second branch
+  .after(stepOne)
+  .step(stepThree)
+  .then(stepFour)
+
+  // Merge both branches using compound after syntax
+  .after([stepTwo, stepFour])
+  .step(finalStep)
+  .commit();
+
+const { start } = myWorkflow.createRun();
+
+const result = await start({ triggerData: { inputValue: 3 } });
+console.log(result.steps.finalStep.output.summary);
+// Output: "The number 3 when doubled is not divisible by 5, and when doubled and incremented is divisible by 3."
+```
+
+----------------------------------------
+
+TITLE: Implementing Cat Expert AI Agent with System Prompt in TypeScript
+DESCRIPTION: Creates an AI agent specialized in cat-related information using Mastra. The agent is configured with specific instructions and a custom tool to fetch verified cat facts from an external API. It uses OpenAI's GPT-4 model and implements input validation using Zod schema.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/examples/agents/system-prompt.mdx#2025-04-22_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { openai } from "@ai-sdk/openai";
+import { Agent } from "@mastra/core/agent";
+import { createTool } from "@mastra/core/tools";
+
+import { z } from "zod";
+
+const instructions = `You are a helpful cat expert assistant. When discussing cats, you should always include an interesting cat fact.
+
+  Your main responsibilities:
+  1. Answer questions about cats
+  2. Use the catFact tool to provide verified cat facts
+  3. Incorporate the cat facts naturally into your responses
+
+  Always use the catFact tool at least once in your responses to ensure accuracy.`;
+
+const getCatFact = async () => {
+  const { fact } = (await fetch("https://catfact.ninja/fact").then((res) =>
+    res.json(),
+  )) as {
+    fact: string;
+  };
+
+  return fact;
+};
+
+const catFact = createTool({
+  id: "Get cat facts",
+  inputSchema: z.object({}),
+  description: "Fetches cat facts",
+  execute: async () => {
+    console.log("using tool to fetch cat fact");
+    return {
+      catFact: await getCatFact(),
+    };
+  },
+});
+
+const catOne = new Agent({
+  name: "cat-one",
+  instructions: instructions,
+  model: openai("gpt-4o-mini"),
+  tools: {
+    catFact,
+  },
+});
+
+const result = await catOne.generate("Tell me a cat fact");
+
+console.log(result.text);
+```
+
+----------------------------------------
+
+TITLE: Using Workflow as Tool in Agent | Mastra vNext Workflows & Agents | TypeScript
+DESCRIPTION: This comprehensive snippet demonstrates how to define a Mastra Workflow and then wrap its execution logic within a Mastra Tool. This tool is then assigned to a Mastra Agent, allowing the agent to invoke the workflow. It shows how to create and start a workflow run from within the tool's execute function and process the results. Requires imports from `@mastra/core` and pre-defined steps.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/docs/workflows-vnext/using-with-agents-and-tools.mdx#_snippet_2
+
+LANGUAGE: TypeScript
+CODE:
+```
+import { Agent } from "@mastra/core/agent";
+import { createTool } from "@mastra/core/tools";
+import { createWorkflow, createStep } from "@mastra/core/workflows/vNext";
+
+const weatherWorkflow = createWorkflow({
+  steps: [fetchWeather, planActivities],
+  id: "weather-workflow-step1-single-day",
+  inputSchema: z.object({
+    city: z.string().describe("The city to get the weather for")
+  }),
+  outputSchema: z.object({
+    activities: z.string(),
+  }),
+})
+  .then(fetchWeather)
+  .then(planActivities);
+
+const activityPlannerTool = createTool({
+  id: "get-weather-specific-activities",
+  description: "Get weather-specific activities for a city",
+  inputSchema: z.object({
+    city: z.string(),
+  }),
+  outputSchema: z.object({
+    activities: z.array(z.string()),
+  }),
+  execute: async ({ context, mastra }) => {
+    const plannerWorkflow = mastra?.getWorkflow("my-workflow");
+    if (!plannerWorkflow) {
+      throw new Error("Planner workflow not found");
+    }
+
+    const run = plannerWorkflow.createRun();
+    const results = await run.start({
+      triggerData: {
+        city: context.city,
+      },
+    });
+    const planActivitiesStep = results.results["plan-activities"];
+    if (planActivitiesStep.status === "success") {
+      return planActivitiesStep.output;
+    }
+
+    return {
+      activities: "No activities found",
+    };
+  },
+});
+
+const activityPlannerAgent = new Agent({
+  name: "activityPlannerAgent",
+  model: openai("gpt-4o"),
+  instructions: `
+  You are an activity planner. You have access to a tool that will help you get weather-specific activities for any city. The tool uses agents to plan the activities, you just need to provide the city. Whatever information you get back, return it as is and add your own thoughts on top of it.
+  `,
+  tools: { activityPlannerTool },
+});
+
+export const mastra = new Mastra({
+  vnext_workflows: {
+    "my-workflow": myWorkflow,
+  },
+  agents: {
+    activityPlannerAgent,
+  },
+});
+```
+
+----------------------------------------
+
+TITLE: Registering Mastra Components (TypeScript)
+DESCRIPTION: Initializes the Mastra core instance. It registers the `weatherWorkflow` and the `planningAgent` and `synthesizeAgent` instances under their respective keys, making them accessible within the Mastra environment. A logger is also configured.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/examples/workflows_vNext/parallel-steps.mdx#_snippet_10
+
+LANGUAGE: typescript
+CODE:
+```
+import { Mastra } from '@mastra/core/mastra'
+import { createLogger } from '@mastra/core/logger'
+import { weatherWorkflow } from './workflows'
+import { planningAgent, synthesizeAgent } from './agents'
+
+const mastra = new Mastra({
+  vnext_workflows: {
+    weatherWorkflow,
+  },
+  agents: {
+    planningAgent,
+	  synthesizeAgent
+  },
+  logger: createLogger({
+    name: 'Mastra',
+    level: 'info',
+  }),
+})
+
+export { mastra }
+```
+
+----------------------------------------
+
+TITLE: Registering Agent with Mastra (TypeScript)
+DESCRIPTION: This code creates the main Mastra instance, serving as the application's entry point, and registers the previously defined `weatherAgent` so that it can be discovered and served by the Mastra development server.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/docs/getting-started/installation.mdx#_snippet_19
+
+LANGUAGE: TypeScript
+CODE:
+```
+import { Mastra } from "@mastra/core";
+
+import { weatherAgent } from "./agents/weather";
+
+export const mastra = new Mastra({
+  agents: { weatherAgent }
+});
+```
+
+----------------------------------------
+
+TITLE: Querying with Metadata Filters using PgVector (TypeScript)
+DESCRIPTION: This snippet demonstrates how to perform a vector store query using PgVector with various metadata filters. It shows examples of simple equality, numeric comparison ($gt), and array membership ($in) filters, following the MongoDB/Sift-like syntax supported by Mastra.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/reference/rag/metadata-filters.mdx#_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { PgVector } from '@mastra/pg';
+
+const store = new PgVector(connectionString);
+
+const results = await store.query({
+  indexName: "my_index",
+  queryVector: queryVector,
+  topK: 10,
+  filter: {
+    category: "electronics",  // Simple equality
+    price: { $gt: 100 },     // Numeric comparison
+    tags: { $in: ["sale", "new"] }  // Array membership
+  }
+});
+```
+
+----------------------------------------
+
+TITLE: Defining and Executing Simple Mastra Workflow in TypeScript
+DESCRIPTION: Creates a workflow that doubles a numeric input value using Mastra's workflow system. The example demonstrates schema validation using Zod, workflow step definition, and workflow execution with trigger data.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/examples/workflows/creating-a-workflow.mdx#2025-04-22_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { Step, Workflow } from "@mastra/core/workflows";
+import { z } from "zod";
+
+const myWorkflow = new Workflow({
+  name: "my-workflow",
+  triggerSchema: z.object({
+    input: z.number(),
+  }),
+});
+
+const stepOne = new Step({
+  id: "stepOne",
+  inputSchema: z.object({
+    value: z.number(),
+  }),
+  outputSchema: z.object({
+    doubledValue: z.number(),
+  }),
+  execute: async ({ context }) => {
+    const doubledValue = context?.triggerData?.input * 2;
+    return { doubledValue };
+  },
+});
+
+myWorkflow.step(stepOne).commit();
+
+const { runId, start } = myWorkflow.createRun();
+
+const res = await start({
+  triggerData: { input: 90 },
+});
+
+console.log(res.results);
+```
+
+----------------------------------------
+
+TITLE: Creating Workflow Steps and Initializing Workflow in TypeScript
+DESCRIPTION: This snippet shows how to create individual steps for a workflow and initialize the workflow using Mastra. It defines three steps that perform calculations based on input and previous step outputs, and sets up a workflow with a trigger schema.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/examples/workflows/sequential-steps.mdx#2025-04-22_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { Step, Workflow } from "@mastra/core/workflows";
+import { z } from "zod";
+
+const stepOne = new Step({
+  id: "stepOne",
+  execute: async ({ context }) => ({
+    doubledValue: context.triggerData.inputValue * 2,
+  }),
+});
+
+const stepTwo = new Step({
+  id: "stepTwo",
+  execute: async ({ context }) => {
+    if (context.steps.stepOne.status !== "success") {
+      return { incrementedValue: 0 }
+    }
+
+    return { incrementedValue: context.steps.stepOne.output.doubledValue + 1 }
+  },
+});
+
+const stepThree = new Step({
+  id: "stepThree",
+  execute: async ({ context }) => {
+    if (context.steps.stepTwo.status !== "success") {
+      return { tripledValue: 0 }
+    }
+
+    return { tripledValue: context.steps.stepTwo.output.incrementedValue * 3 }
+  },
+});
+
+// Build the workflow
+const myWorkflow = new Workflow({
+  name: "my-workflow",
+  triggerSchema: z.object({
+    inputValue: z.number(),
+  }),
+});
+```
+
+----------------------------------------
+
+TITLE: Using Mastra Server Action in React Component | typescript
+DESCRIPTION: Example React component demonstrating how to call the `getWeatherInfo` Server Action from a client component. It shows fetching user input from a form and calling the server action within an async function triggered by form submission.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/docs/frameworks/next-js.mdx#_snippet_15
+
+LANGUAGE: typescript
+CODE:
+```
+'use client'
+
+import { getWeatherInfo } from '../actions'
+
+export function Weather() {
+  async function handleSubmit(formData: FormData) {
+    const city = formData.get('city') as string
+    const result = await getWeatherInfo(city)
+    // Handle the result
+    console.log(result) // Note: Server Action result is logged on the server unless returned and handled on client
+  }
+
+  return (
+    <form action={handleSubmit}>
+      <input name="city" placeholder="Enter city name" />
+      <button type="submit">Get Weather</button>
+    </form>
+  )
+}
+```
+
+----------------------------------------
+
+TITLE: Error Handling During Workflow Execution in TypeScript
+DESCRIPTION: This snippet shows an error handling pattern when executing a workflow. It captures exceptions thrown during the workflow execution, checking for validation-related errors to handle them appropriately.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/reference/workflows/workflow.mdx#2025-04-22_snippet_5
+
+LANGUAGE: typescript
+CODE:
+```
+try {
+  const { runId, start, watch, resume } = workflow.createRun();
+  await start({ triggerData: data });
+} catch (error) {
+  if (error instanceof ValidationError) {
+    // Handle validation errors
+    console.log(error.type); // 'circular_dependency' | 'no_terminal_path' | 'unreachable_step'
+    console.log(error.details); // { stepId?: string, path?: string[] }
+  }
+}
+```
+
+----------------------------------------
+
+TITLE: Creating Vector Query Tool with Re-ranking
+DESCRIPTION: Configures a vector query tool with re-ranking capabilities using OpenAI embeddings and GPT-4o-mini model.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/examples/rag/rerank/rerank-rag.mdx#2025-04-22_snippet_2
+
+LANGUAGE: typescript
+CODE:
+```
+const vectorQueryTool = createVectorQueryTool({
+  vectorStoreName: "pgVector",
+  indexName: "embeddings",
+  model: openai.embedding("text-embedding-3-small"),
+  reranker: {
+    model: openai("gpt-4o-mini"),
+  },
+});
+```
+
+----------------------------------------
+
+TITLE: Implementing Weather Tool and Agent in Mastra with TypeScript
+DESCRIPTION: This code snippet showcases the creation of a custom weather tool and an AI agent in Mastra. It includes API calls to fetch weather data, parsing of weather conditions, and setting up the agent with specific instructions. The main function demonstrates how to use the created agent to generate weather information for a given location.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/examples/agents/using-a-tool.mdx#2025-04-22_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { Mastra } from "@mastra/core";
+import { Agent } from "@mastra/core/agent";
+import { createTool } from "@mastra/core/tools";
+import { openai } from "@ai-sdk/openai";
+import { z } from "zod";
+
+interface WeatherResponse {
+  current: {
+    time: string;
+    temperature_2m: number;
+    apparent_temperature: number;
+    relative_humidity_2m: number;
+    wind_speed_10m: number;
+    wind_gusts_10m: number;
+    weather_code: number;
+  };
+}
+
+const weatherTool = createTool({
+  id: "get-weather",
+  description: "Get current weather for a location",
+  inputSchema: z.object({
+    location: z.string().describe("City name"),
+  }),
+  outputSchema: z.object({
+    temperature: z.number(),
+    feelsLike: z.number(),
+    humidity: z.number(),
+    windSpeed: z.number(),
+    windGust: z.number(),
+    conditions: z.string(),
+    location: z.string(),
+  }),
+  execute: async ({ context }) => {
+    return await getWeather(context.location);
+  },
+});
+
+const getWeather = async (location: string) => {
+  const geocodingUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1`;
+  const geocodingResponse = await fetch(geocodingUrl);
+  const geocodingData = await geocodingResponse.json();
+
+  if (!geocodingData.results?.[0]) {
+    throw new Error(`Location '${location}' not found`);
+  }
+
+  const { latitude, longitude, name } = geocodingData.results[0];
+
+  const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,wind_gusts_10m,weather_code`;
+
+  const response = await fetch(weatherUrl);
+  const data: WeatherResponse = await response.json();
+
+  return {
+    temperature: data.current.temperature_2m,
+    feelsLike: data.current.apparent_temperature,
+    humidity: data.current.relative_humidity_2m,
+    windSpeed: data.current.wind_speed_10m,
+    windGust: data.current.wind_gusts_10m,
+    conditions: getWeatherCondition(data.current.weather_code),
+    location: name,
+  };
+};
+
+function getWeatherCondition(code: number): string {
+  const conditions: Record<number, string> = {
+    0: "Clear sky",
+    1: "Mainly clear",
+    2: "Partly cloudy",
+    3: "Overcast",
+    45: "Foggy",
+    48: "Depositing rime fog",
+    51: "Light drizzle",
+    53: "Moderate drizzle",
+    55: "Dense drizzle",
+    56: "Light freezing drizzle",
+    57: "Dense freezing drizzle",
+    61: "Slight rain",
+    63: "Moderate rain",
+    65: "Heavy rain",
+    66: "Light freezing rain",
+    67: "Heavy freezing rain",
+    71: "Slight snow fall",
+    73: "Moderate snow fall",
+    75: "Heavy snow fall",
+    77: "Snow grains",
+    80: "Slight rain showers",
+    81: "Moderate rain showers",
+    82: "Violent rain showers",
+    85: "Slight snow showers",
+    86: "Heavy snow showers",
+    95: "Thunderstorm",
+    96: "Thunderstorm with slight hail",
+    99: "Thunderstorm with heavy hail",
+  };
+  return conditions[code] || "Unknown";
+}
+
+const weatherAgent = new Agent({
+  name: "Weather Agent",
+  instructions: `You are a helpful weather assistant that provides accurate weather information.
+Your primary function is to help users get weather details for specific locations. When responding:
+- Always ask for a location if none is provided
+- If the location name isn't in English, please translate it
+- Include relevant details like humidity, wind conditions, and precipitation
+- Keep responses concise but informative
+Use the weatherTool to fetch current weather data.`,
+  model: openai("gpt-4o-mini"),
+  tools: { weatherTool },
+});
+
+const mastra = new Mastra({
+  agents: { weatherAgent },
+});
+
+async function main() {
+  const agent = await mastra.getAgent("weatherAgent");
+  const result = await agent.generate("What is the weather in London?");
+  console.log(result.text);
+}
+
+main();
+```
+
+----------------------------------------
+
+TITLE: Define Mastra Workflow with Multiple Suspension Points (TypeScript)
+DESCRIPTION: This TypeScript code defines a Mastra workflow (`multi-suspend-workflow`) composed of several steps. Two steps, `promptAgentStep` and `improveResponseStep`, demonstrate how to integrate suspension logic using `await suspend()`. The `promptAgentStep` also shows how to pass an optional payload when suspending. The workflow chain is defined using `.step().then().commit()`, and the workflow is registered with a Mastra instance.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/docs/workflows/suspend-and-resume.mdx#_snippet_1
+
+LANGUAGE: typescript
+CODE:
+```
+// Define steps with suspend capability
+const promptAgentStep = new Step({
+  id: "promptAgent",
+  execute: async ({ context, suspend }) => {
+    // Some condition that determines if we need to suspend
+    if (needHumanInput) {
+      // Optionally pass payload data that will be stored with suspended state
+      await suspend({ requestReason: "Need human input for prompt" });
+      // Code after suspend() will execute when the step is resumed
+      return { modelOutput: context.userInput };
+    }
+    return { modelOutput: "AI generated output" };
+  },
+  outputSchema: z.object({ modelOutput: z.string() }),
+});
+
+const improveResponseStep = new Step({
+  id: "improveResponse",
+  execute: async ({ context, suspend }) => {
+    // Another condition for suspension
+    if (needFurtherRefinement) {
+      await suspend();
+      return { improvedOutput: context.refinedOutput };
+    }
+    return { improvedOutput: "Improved output" };
+  },
+  outputSchema: z.object({ improvedOutput: z.string() }),
+});
+
+// Build the workflow
+const workflow = new Workflow({
+  name: "multi-suspend-workflow",
+  triggerSchema: z.object({ input: z.string() }),
+});
+
+workflow
+  .step(getUserInput)
+  .then(promptAgentStep)
+  .then(evaluateTone)
+  .then(improveResponseStep)
+  .then(evaluateImproved)
+  .commit();
+
+// Register the workflow with Mastra
+export const mastra = new Mastra({
+  workflows: { workflow },
+});
+```
+
+----------------------------------------
+
+TITLE: Performing Graph-Based Queries
+DESCRIPTION: Demonstrates how to use the configured Mastra agent to perform various graph-based queries on the processed data.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/examples/rag/usage/graph-rag.mdx#2025-04-22_snippet_7
+
+LANGUAGE: typescript
+CODE:
+```
+const queryOne = "What are the direct and indirect effects of early railway decisions on Riverdale Heights' current state?";
+const answerOne = await ragAgent.generate(queryOne);
+console.log('\nQuery:', queryOne);
+console.log('Response:', answerOne.text);
+
+const queryTwo = 'How have changes in transportation infrastructure affected different generations of local businesses and community spaces?';
+const answerTwo = await ragAgent.generate(queryTwo);
+console.log('\nQuery:', queryTwo);
+console.log('Response:', answerTwo.text);
+
+const queryThree = 'Compare how the Rossi family business and Thompson Steel Works responded to major infrastructure changes, and how their responses affected the community.';
+const answerThree = await ragAgent.generate(queryThree);
+console.log('\nQuery:', queryThree);
+console.log('Response:', answerThree.text);
+
+const queryFour = 'Trace how the transformation of the Thompson Steel Works site has influenced surrounding businesses and cultural spaces from 1932 to present.';
+const answerFour = await ragAgent.generate(queryFour);
+console.log('\nQuery:', queryFour);
+console.log('Response:', answerFour.text);
+```
+
+----------------------------------------
+
+TITLE: Handling Chat Logic in Next.js API Route with Mastra Agent and Memory
+DESCRIPTION: This code snippet showcases a Next.js API route (`app/api/chat/route.ts`) that processes chat messages using a Mastra Agent and Memory. The route expects a JSON payload containing a single `message` (of type `CoreMessage`), a `threadId`, and a `resourceId`.  It retrieves the message content, interacts with the Mastra Agent to generate a response, and streams the response back to the client. It also includes error handling for cases where the message content is missing.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/examples/memory/use-chat.mdx#_snippet_1
+
+LANGUAGE: typescript
+CODE:
+```
+// app/api/chat/route.ts (Next.js Example)
+import { Agent } from "@mastra/core/agent";
+import { Memory } from "@mastra/memory";
+import { openai } from "@ai-sdk/openai";
+import { CoreMessage } from "@mastra/core"; // Import CoreMessage
+
+const agent = new Agent({
+  name: "ChatAgent",
+  instructions: "You are a helpful assistant.",
+  model: openai("gpt-4o"),
+  memory: new Memory(), // Assumes default memory setup
+});
+
+export async function POST(request: Request) {
+  // Get data structured by experimental_prepareRequestBody
+  const { message, threadId, resourceId }: { message: CoreMessage | null; threadId: string; resourceId: string } = await request.json();
+
+  // Handle cases where message might be null (e.g., initial load or error)
+  if (!message || !message.content) {
+    // Return an appropriate response or error
+    return new Response("Missing message content", { status: 400 });
+  }
+
+  // Process with memory using the single message content
+  const stream = await agent.stream(message.content, {
+    threadId,
+    resourceId,
+    // Pass other message properties if needed, e.g., role
+    // messageOptions: { role: message.role }
+  });
+
+  // Return the streaming response
+  return stream.toDataStreamResponse();
+}
+```
+
+----------------------------------------
+
+TITLE: Using Mastra with Pinecone for Top-K Similarity Search
+DESCRIPTION: Demonstrates the complete workflow of processing text documents, generating embeddings, storing them in Pinecone, and performing similarity searches. The code shows initialization of document processing, chunking, embedding generation using OpenAI, Pinecone index creation, vector storage, and retrieval of top-K similar results.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/examples/rag/query/retrieve-results.mdx#2025-04-22_snippet_0
+
+LANGUAGE: tsx
+CODE:
+```
+import { openai } from "@ai-sdk/openai";
+import { PineconeVector } from "@mastra/pinecone";
+import { MDocument } from "@mastra/rag";
+import { embedMany } from "ai";
+
+const doc = MDocument.fromText("Your text content...");
+
+const chunks = await doc.chunk();
+
+const { embeddings } = await embedMany({
+  values: chunks.map(chunk => chunk.text),
+  model: openai.embedding("text-embedding-3-small"),
+});
+
+const pinecone = new PineconeVector("your-api-key");
+
+await pinecone.createIndex({
+  indexName: "test_index",
+  dimension: 1536,
+});
+
+await pinecone.upsert({
+  indexName: "test_index",
+  vectors: embeddings,
+  metadata: chunks?.map((chunk: any) => ({ text: chunk.text })),
+});
+
+const topK = 10;
+
+const results = await pinecone.query({
+  indexName: "test_index",
+  queryVector: embeddings[0],
+  topK,
+});
+
+console.log(results);
+```
+
+----------------------------------------
+
+TITLE: Defining Inngest Steps and Workflows with Mastra (TypeScript)
+DESCRIPTION: Demonstrates how to initialize the Inngest integration with `@mastra/inngest`, define individual workflow steps using `createStep` with Zod schemas for input/output, and compose these steps into a complex workflow using `createWorkflow`, including looping constructs like `dountil`. It also shows how to integrate the defined workflow into a Mastra server instance.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/workflows/README.md#_snippet_1
+
+LANGUAGE: typescript
+CODE:
+```
+import { init } from '@mastra/inngest';
+import { Inngest, serve as inngestServe } from 'inngest';
+import { z } from 'zod';
+
+const { createWorkflow, createStep } = init(
+  new Inngest({
+    id: 'mastra',
+    baseUrl: `http://localhost:8288`, // if using local dev server
+  }),
+);
+
+const incrementStep = createStep({
+  id: 'increment',
+  inputSchema: z.object({
+    value: z.number(),
+  }),
+  outputSchema: z.object({
+    value: z.number(),
+  }),
+  execute: async ({ inputData }) => {
+    return { value: inputData.value + 1 };
+  },
+});
+
+const sideEffectStep = createStep({
+  id: 'side-effect',
+  inputSchema: z.object({
+    value: z.number(),
+  }),
+  outputSchema: z.object({
+    value: z.number(),
+  }),
+  execute: async ({ inputData }) => {
+    console.log('log', inputData.value);
+    return { value: inputData.value };
+  },
+});
+
+const finalStep = createStep({
+  id: 'final',
+  inputSchema: z.object({
+    value: z.number(),
+  }),
+  outputSchema: z.object({
+    value: z.number(),
+  }),
+  execute: async ({ inputData }) => {
+    return { value: inputData.value };
+  },
+});
+
+const workflow = createWorkflow({
+  id: 'increment-workflow',
+  inputSchema: z.object({
+    value: z.number(),
+  }),
+  outputSchema: z.object({
+    value: z.number(),
+  }),
+})
+  .dountil(
+    createWorkflow({
+      id: 'increment-subworkflow',
+      inputSchema: z.object({
+        value: z.number(),
+      }),
+      outputSchema: z.object({
+        value: z.number(),
+      }),
+      steps: [incrementStep, sideEffectStep],
+    })
+      .then(incrementStep)
+      .then(sideEffectStep)
+      .commit(),
+    async ({ inputData }) => inputData.value >= 10,
+  )
+  .then(finalStep)
+  .commit();
+
+export const mastra = new Mastra({
+  vnext_workflows: {
+    incrementWorkflow,
+  },
+  server: {
+    host: '0.0.0.0',
+    apiRoutes: [
+      {
+        path: '/inngest/api', // this needs to match the path in inngest dev server (or production) config
+        method: 'ALL',
+        createHandler: async ({ mastra }) => inngestServe({ mastra, inngest }),
+      },
+    ],
+  },
+  logger: createLogger({
+    name: 'Mastra',
+    level: 'info',
+  }),
+});
+```
+
+----------------------------------------
+
+TITLE: 音声から音声への変換（OpenAI Realtime）
+DESCRIPTION: OpenAI Realtime Voiceを使用して、音声から音声への変換を行います。この例では、マイクロフォンからの音声ストリームを取得し、AIエージェントに送信します。エージェントからの音声応答を再生します。
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/docs/voice/overview.mdx#_snippet_18
+
+LANGUAGE: typescript
+CODE:
+```
+import { Agent } from '@mastra/core/agent';
+import { openai } from '@ai-sdk/openai';
+import { playAudio, getMicrophoneStream } from '@mastra/node-audio';
+import { OpenAIRealtimeVoice } from "@mastra/voice-openai-realtime";
+
+const voiceAgent = new Agent({
+  name: "Voice Agent",
+  instructions: "You are a voice assistant that can help users with their tasks.",
+  model: openai("gpt-4o"),
+  voice: new OpenAIRealtimeVoice(),
+});
+
+// Listen for agent audio responses
+voiceAgent.voice.on('speaker', ({ audio }) => {
+  playAudio(audio);
+});
+
+// Initiate the conversation
+await voiceAgent.voice.speak('How can I help you today?');
+
+// Send continuous audio from the microphone
+const micStream = getMicrophoneStream();
+await voiceAgent.voice.send(micStream);
+```
+
+----------------------------------------
+
+TITLE: Moderating Content with Human Input in Mastra (TypeScript)
+DESCRIPTION: This step defines content moderation logic within a Mastra workflow, including human review when necessary. It uses Zod to define the schema for human input. If the AI analysis score is high, the content is auto-approved. Otherwise, it suspends the workflow for human review, collecting moderator decisions, notes, and potentially modified content upon resumption.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/examples/workflows/human-in-the-loop.mdx#2025-04-22_snippet_5
+
+LANGUAGE: typescript
+CODE:
+```
+// Step 2: Moderate content that needs review
+const moderateContent = new Step({
+  id: 'moderateContent',
+  // Define the schema for human input that will be provided when resuming
+  inputSchema: z.object({
+    moderatorDecision: z.enum(['approve', 'reject', 'modify']).optional(),
+    moderatorNotes: z.string().optional(),
+    modifiedContent: z.string().optional(),
+  }),
+  outputSchema: z.object({
+    moderationResult: z.enum(['approved', 'rejected', 'modified']),
+    moderatedContent: z.string(),
+    notes: z.string().optional(),
+  }),
+  // @ts-ignore
+  execute: async ({ context, suspend }) => {
+    const analysisResult = context.getStepResult(analyzeContent);
+    // Access the input provided when resuming the workflow
+    const moderatorInput = {
+      decision: context.inputData?.moderatorDecision,
+      notes: context.inputData?.moderatorNotes,
+      modifiedContent: context.inputData?.modifiedContent,
+    };
+
+    // If the AI analysis score is high enough, auto-approve
+    if (analysisResult?.aiAnalysisScore > 0.9 && !analysisResult?.flaggedCategories?.length) {
+      return {
+        moderationResult: 'approved',
+        moderatedContent: analysisResult.content,
+        notes: 'Auto-approved by system',
+      };
+    }
+
+    // If we don't have moderator input yet, suspend for human review
+    if (!moderatorInput.decision) {
+      await suspend({
+        content: analysisResult?.content,
+        aiScore: analysisResult?.aiAnalysisScore,
+        flaggedCategories: analysisResult?.flaggedCategories,
+        message: 'Please review this content and make a moderation decision',
+      });
+
+      // Placeholder return
+      return {
+        moderationResult: 'approved',
+        moderatedContent: '',
+      };
+    }
+
+    // Process the moderator's decision
+    switch (moderatorInput.decision) {
+      case 'approve':
+        return {
+          moderationResult: 'approved',
+          moderatedContent: analysisResult?.content || '',
+          notes: moderatorInput.notes || 'Approved by moderator',
+        };
+
+      case 'reject':
+        return {
+          moderationResult: 'rejected',
+          moderatedContent: '',
+          notes: moderatorInput.notes || 'Rejected by moderator',
+        };
+
+      case 'modify':
+        return {
+          moderationResult: 'modified',
+          moderatedContent: moderatorInput.modifiedContent || analysisResult?.content || '',
+          notes: moderatorInput.notes || 'Modified by moderator',
+        };
+
+      default:
+        return {
+          moderationResult: 'rejected',
+          moderatedContent: '',
+          notes: 'Invalid moderator decision',
+        };
+    }
+  },
+});
+```
+
+----------------------------------------
+
+TITLE: Implementing Advanced Branching and Merging in Mastra
+DESCRIPTION: This snippet illustrates how to implement advanced branching and merging in a Mastra workflow using multiple branches and merge points.  It defines a `complexWorkflow` with three branches stemming from `stepOne`. Two branches merge at `partialMerge`, and the third branch merges at `finalMerge`. The code shows the creation of new `Step` instances directly within the workflow definition. The steps calculate results based on input and results of previous steps. The workflow utilizes .after() to control dependencies and merging.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/examples/workflows/branching-paths.mdx#_snippet_2
+
+LANGUAGE: typescript
+CODE:
+```
+const complexWorkflow = new Workflow({
+  name: "complex-workflow",
+  triggerSchema: z.object({
+    inputValue: z.number(),
+  }),
+});
+
+// Create multiple branches with different merge points
+complexWorkflow
+  // Main step
+  .step(stepOne)
+
+  // First branch
+  .then(stepTwo)
+
+  // Second branch
+  .after(stepOne)
+  .step(stepThree)
+  .then(stepFour)
+
+  // Third branch (another path from stepOne)
+  .after(stepOne)
+  .step(new Step({
+    id: "alternativePath",
+    execute: async ({ context }) => {
+      const stepOneResult = context.getStepResult<{ doubledValue: number }>("stepOne");
+      return {
+        result: (stepOneResult?.doubledValue || 0) * 3
+      }
+    }
+  }))
+
+  // Merge first and second branches
+  .after([stepTwo, stepFour])
+  .step(new Step({
+    id: "partialMerge",
+    execute: async ({ context }) => {
+      const stepTwoResult = context.getStepResult<{ isDivisibleByFive: boolean }>("stepTwo");
+      const stepFourResult = context.getStepResult<{ isDivisibleByThree: boolean }>("stepFour");
+
+      return {
+        intermediateResult: "Processed first two branches",
+        branchResults: {
+          branch1: stepTwoResult?.isDivisibleByFive,
+          branch2: stepFourResult?.isDivisibleByThree
+        }
+      }
+    }
+  }))
+
+  // Final merge of all branches
+  .after(["partialMerge", "alternativePath"])
+  .step(new Step({
+    id: "finalMerge",
+    execute: async ({ context }) => {
+      const partialMergeResult = context.getStepResult<{ intermediateResult: string, branchResults: { branch1: boolean, branch2: boolean } }>("partialMerge");
+
+      const alternativePathResult = context.getStepResult<{ result: number }>("alternativePath");
+
+      return {
+        finalResult: "All branches processed",
+        combinedData: {
+          fromPartialMerge: partialMergeResult?.branchResults,
+          fromAlternativePath: alternativePathResult?.result
+        }
+      }
+    }
+  }))
+  .commit();
+```
+
+----------------------------------------
+
+TITLE: Creating Custom Tools with createTool() in TypeScript
+DESCRIPTION: This snippet demonstrates how to create custom tools using the createTool() function from Mastra. It includes examples of a stock price tool and a thread info tool, showcasing input/output schema validation, execution logic, and integration with the Mastra ecosystem.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/reference/agents/createTool.mdx#2025-04-22_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { createTool } from "@mastra/core/tools";
+import { z } from "zod";
+
+// Helper function to fetch stock data
+const getStockPrice = async (symbol: string) => {
+  const response = await fetch(
+    `https://mastra-stock-data.vercel.app/api/stock-data?symbol=${symbol}`
+  );
+  const data = await response.json();
+  return data.prices["4. close"];
+};
+
+// Create a tool to get stock prices
+export const stockPriceTool = createTool({
+  id: "getStockPrice",
+  description: "Fetches the current stock price for a given ticker symbol",
+  inputSchema: z.object({
+    symbol: z.string().describe("The stock ticker symbol (e.g., AAPL, MSFT)")
+  }),
+  outputSchema: z.object({
+    symbol: z.string(),
+    price: z.number(),
+    currency: z.string(),
+    timestamp: z.string()
+  }),
+  execute: async ({ context }) => {
+    const price = await getStockPrice(context.symbol);
+    
+    return {
+      symbol: context.symbol,
+      price: parseFloat(price),
+      currency: "USD",
+      timestamp: new Date().toISOString()
+    };
+  }
+});
+
+// Create a tool that uses the thread context
+export const threadInfoTool = createTool({
+  id: "getThreadInfo",
+  description: "Returns information about the current conversation thread",
+  inputSchema: z.object({
+    includeResource: z.boolean().optional().default(false)
+  }),
+  execute: async ({ context, threadId, resourceId }) => {
+    return {
+      threadId,
+      resourceId: context.includeResource ? resourceId : undefined,
+      timestamp: new Date().toISOString()
+    };
+  }
+});
+```
+
+----------------------------------------
+
+TITLE: Composing Workflows with Parallel and Branch using Nested Workflows in TypeScript
+DESCRIPTION: This snippet demonstrates how nested workflows are used to compose more complex execution flows like parallel execution and branching. It defines `planBothWorkflow` which runs `planActivities` and `planIndoorActivities` in parallel before `sythesizeStep`. It then defines `weatherWorkflow` which uses `planBothWorkflow` and `planActivities` within a `.branch()` structure based on an input condition (`precipitationChance`).
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/docs/workflows-vnext/flow-control.mdx#_snippet_10
+
+LANGUAGE: typescript
+CODE:
+```
+const planBothWorkflow = createWorkflow({
+  id: "plan-both-workflow",
+  inputSchema: forecastSchema,
+  outputSchema: z.object({
+    activities: z.string(),
+  }),
+  steps: [planActivities, planIndoorActivities, sythesizeStep],
+})
+  .parallel([planActivities, planIndoorActivities])
+  .then(sythesizeStep)
+  .commit();
+
+const weatherWorkflow = createWorkflow({
+  id: "weather-workflow-step3-concurrency",
+  inputSchema: z.object({
+    city: z.string().describe("The city to get the weather for"),
+  }),
+  outputSchema: z.object({
+    activities: z.string(),
+  }),
+  steps: [fetchWeather, planBothWorkflow, planActivities],
+})
+  .then(fetchWeather)
+  .branch([
+    [
+      async ({ inputData }) => {
+        return inputData?.precipitationChance > 20;
+      },
+      planBothWorkflow,
+    ],
+    [
+      async ({ inputData }) => {
+        return inputData?.precipitationChance <= 20;
+      },
+      planActivities,
+    ],
+  ]);
+```
+
+----------------------------------------
+
+TITLE: Creating Publisher Agent and Mastra Instance in TypeScript
+DESCRIPTION: This snippet creates a Publisher agent that coordinates the Copywriter and Editor agents. It also initializes a Mastra instance with the Publisher agent.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/examples/agents/hierarchical-multi-agent.mdx#2025-04-22_snippet_2
+
+LANGUAGE: typescript
+CODE:
+```
+const publisherAgent = new Agent({
+  name: "publisherAgent",
+  instructions:
+    "You are a publisher agent that first calls the copywriter agent to write blog post copy about a specific topic and then calls the editor agent to edit the copy. Just return the final edited copy.",
+  model: anthropic("claude-3-5-sonnet-20241022"),
+  tools: { copywriterTool, editorTool },
+});
+
+const mastra = new Mastra({
+  agents: { publisherAgent },
+});
+```
+
+----------------------------------------
+
+TITLE: Upsert Embeddings with Metadata - TypeScript
+DESCRIPTION: Stores an array of embedding vectors and their corresponding metadata into a specified index. The operation updates existing vectors or creates new ones. Includes comments explaining the parameters.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/docs/rag/vector-databases.mdx#_snippet_2
+
+LANGUAGE: TypeScript
+CODE:
+```
+// Store embeddings with their corresponding metadata
+await store.upsert({
+  indexName: 'myCollection',  // index name
+  vectors: embeddings,       // array of embedding vectors
+  metadata: chunks.map(chunk => ({
+    text: chunk.text,  // The original text content
+    id: chunk.id       // Optional unique identifier
+  }))
+});
+```
+
+----------------------------------------
+
+TITLE: Complete Workflow.while() Example
+DESCRIPTION: Provides a complete example of using `Workflow.while()` to create a counter workflow.  It defines steps for incrementing a counter and a final step, then configures the workflow with a while loop that continues as long as the counter is less than a target value. Includes setup with `zod` for schema validation.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/reference/workflows/while.mdx#_snippet_3
+
+LANGUAGE: typescript
+CODE:
+```
+import { Workflow, Step } from '@mastra/core';
+import { z } from 'zod';
+
+// Create a step that increments a counter
+const incrementStep = new Step({
+  id: 'increment',
+  description: 'Increments the counter by 1',
+  outputSchema: z.object({
+    value: z.number(),
+  }),
+  execute: async ({ context }) => {
+    // Get current value from previous execution or start at 0
+    const currentValue =
+      context.getStepResult<{ value: number }>('increment')?.value ||
+      context.getStepResult<{ startValue: number }>('trigger')?.startValue ||
+      0;
+
+    // Increment the value
+    const value = currentValue + 1;
+    console.log(`Incrementing to ${value}`);
+
+    return { value };
+  },
+});
+
+// Create a final step
+const finalStep = new Step({
+  id: 'final',
+  description: 'Final step after loop completes',
+  execute: async ({ context }) => {
+    const finalValue = context.getStepResult<{ value: number }>('increment')?.value;
+    console.log(`Loop completed with final value: ${finalValue}`);
+    return { finalValue };
+  },
+});
+
+// Create the workflow
+const counterWorkflow = new Workflow({
+  name: 'counter-workflow',
+  triggerSchema: z.object({
+    startValue: z.number(),
+    targetValue: z.number(),
+  }),
+});
+
+// Configure the workflow with a while loop
+counterWorkflow
+  .step(incrementStep)
+  .while(
+    async ({ context }) => {
+      const targetValue = context.triggerData.targetValue;
+      const currentValue = context.getStepResult<{ value: number }>('increment')?.value ?? 0;
+      return currentValue < targetValue;
+    },
+    incrementStep
+  )
+  .then(finalStep)
+  .commit();
+
+// Execute the workflow
+const run = counterWorkflow.createRun();
+const result = await run.start({ triggerData: { startValue: 0, targetValue: 5 } });
+// Will increment from 0 to 4, then stop and execute finalStep
+```
+
+----------------------------------------
+
+TITLE: Workflow else() Usage Example (Typescript)
+DESCRIPTION: Demonstrates the basic usage of the `.else()` method in a Mastra workflow. It shows how to define a conditional branch using `if()` and create an alternative branch with `.else()` that executes when the condition is false. The workflow includes steps for both the `if` and `else` branches.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/reference/workflows/else.mdx#_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+workflow
+  .step(startStep)
+  .if(async ({ context }) => {
+    const value = context.getStepResult<{ value: number }>('start')?.value;
+    return value < 10;
+  })
+  .then(ifBranchStep)
+  .else() // Alternative branch when the condition is false
+  .then(elseBranchStep)
+  .commit();
+```
+
+----------------------------------------
+
+TITLE: Integrating Function Calling with OpenAI Real-time Voice in TypeScript
+DESCRIPTION: This example demonstrates how to define a custom weather tool, initialize the OpenAIRealtimeVoice provider, add the tool to the voice provider, and connect to the real-time service. The weather tool is created using createTool() with input/output schemas and an execute function that fetches weather data.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/reference/voice/voice.addTools.mdx#2025-04-22_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { OpenAIRealtimeVoice } from "@mastra/voice-openai-realtime";
+import { createTool } from "@mastra/core/tools";
+import { z } from "zod";
+
+// Define tools
+const weatherTool = createTool({
+  id: "getWeather",
+  description: "Get the current weather for a location",
+  inputSchema: z.object({
+    location: z.string().describe("The city and state, e.g. San Francisco, CA"),
+  }),
+  outputSchema: z.object({
+    message: z.string(),
+  }),
+  execute: async ({ context }) => {
+    // Fetch weather data from an API
+    const response = await fetch(`https://api.weather.com?location=${encodeURIComponent(context.location)}`);
+    const data = await response.json();
+    return { message: `The current temperature in ${context.location} is ${data.temperature}°F with ${data.conditions}.` };
+  },
+});
+
+// Initialize a real-time voice provider
+const voice = new OpenAIRealtimeVoice({
+  realtimeConfig: {
+    model: "gpt-4o-mini-realtime",
+    apiKey: process.env.OPENAI_API_KEY,
+  },
+});
+
+// Add tools to the voice provider
+voice.addTools({
+  getWeather: weatherTool,
+});
+
+// Connect to the real-time service
+await voice.connect();
+```
+
+----------------------------------------
+
+TITLE: Generating Embeddings | OpenAI | TypeScript
+DESCRIPTION: Illustrates generating embeddings for an array of text values (typically document chunks) using the `@ai-sdk/openai` provider and the `embedMany` function from the `ai` SDK. Requires importing `openai` and `embedMany`.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/docs/rag/chunking-and-embedding.mdx#_snippet_2
+
+LANGUAGE: TypeScript
+CODE:
+```
+import { openai } from "@ai-sdk/openai";
+import { embedMany } from "ai";
+
+const { embeddings } = await embedMany({
+  model: openai.embedding('text-embedding-3-small'),
+  values: chunks.map(chunk => chunk.text),
+});
+```
+
+----------------------------------------
+
+TITLE: Initializing Mastra and Registering Components - Mastra - TypeScript
+DESCRIPTION: This code initializes the Mastra library instance. It registers defined workflows (like `weatherWorkflow`) under `vnext_workflows` and agents (like `planningAgent`) under `agents`. It also configures a logger instance. This registration is crucial for workflows to be accessible and for workflows to be able to call registered agents.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/examples/workflows_vNext/conditional-branching.mdx#_snippet_2
+
+LANGUAGE: TypeScript
+CODE:
+```
+import { Mastra } from '@mastra/core/mastra'
+import { createLogger } from '@mastra/core/logger'
+import { weatherWorkflow } from './workflows'
+import { planningAgent } from './agents'
+
+const mastra = new Mastra({
+  vnext_workflows: {
+    weatherWorkflow,
+  },
+  agents: {
+    planningAgent,
+  },
+  logger: createLogger({
+    name: 'Mastra',
+    level: 'info',
+  }),
+})
+
+export { mastra }
+```
+
+----------------------------------------
+
+TITLE: Inserting Embeddings into LibSQLVector (TypeScript)
+DESCRIPTION: Illustrates how to prepare text content, chunk it, generate embeddings via OpenAI, and then use the LibSQLVector class to interact with a LibSQL database. It shows initializing the client with a connection URL and optional auth token, creating a vector index, and upserting the embeddings and metadata. Requires @mastra/core/vector/libsql and ai packages.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/examples/rag/upsert/upsert-embeddings.mdx#_snippet_1
+
+LANGUAGE: TypeScript
+CODE:
+```
+import { openai } from "@ai-sdk/openai";
+import { LibSQLVector } from "@mastra/core/vector/libsql";
+import { MDocument } from "@mastra/rag";
+import { embedMany } from "ai";
+
+const doc = MDocument.fromText("Your text content...");
+
+const chunks = await doc.chunk();
+
+const { embeddings } = await embedMany({
+  values: chunks.map((chunk) => chunk.text),
+  model: openai.embedding("text-embedding-3-small"),
+});
+
+const libsql = new LibSQLVector({
+  connectionUrl: process.env.DATABASE_URL,
+  authToken: process.env.DATABASE_AUTH_TOKEN, // Optional: for Turso cloud databases
+});
+
+await libsql.createIndex({
+  indexName: "test_collection",
+  dimension: 1536,
+});
+
+await libsql.upsert({
+  indexName: "test_collection",
+  vectors: embeddings,
+  metadata: chunks?.map((chunk) => ({ text: chunk.text })),
+});
+```
+
+----------------------------------------
+
+TITLE: Creating Project Directory (Bash)
+DESCRIPTION: Bash commands to create a new directory named `hello-mastra` and navigate into it, serving as the root for the new Mastra project.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/docs/getting-started/installation.mdx#_snippet_5
+
+LANGUAGE: Bash
+CODE:
+```
+mkdir hello-mastra
+cd hello-mastra
+```
+
+----------------------------------------
+
+TITLE: Implementing Sentiment Analysis Prompt with TypeScript
+DESCRIPTION: This snippet creates a sentiment analysis prompt that evaluates the sentiment of a given text. It defines the required variables and provides examples for the AI to learn from while detailing constraints for ensuring output consistency.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/explorations/prompt/examples.md#2025-04-22_snippet_1
+
+LANGUAGE: typescript
+CODE:
+```
+type SentimentVars = {
+  text: string;
+  language: string;
+};
+
+const sentimentPrompt = createPrompt<SentimentVars>('Analyze sentiment', {
+  persona: 'Language Analyst',
+  outputFormat: 'json',
+})
+  .text('Analyze the sentiment of this {{language}} text:\n\n{{text}}')
+  .examples([
+    {
+      input: {
+        text: 'The product exceeded my expectations, highly recommend!',
+        language: 'English',
+      },
+      output: {
+        sentiment: 'positive',
+        confidence: 0.95,
+        aspects: ['product quality', 'recommendation'],
+      },
+    },
+    {
+      input: {
+        text: 'Service was okay, but the wait time was too long',
+        language: 'English',
+      },
+      output: {
+        sentiment: 'mixed',
+        confidence: 0.8,
+        aspects: ['service quality', 'wait time'],
+      },
+    },
+  ])
+  .constraints([
+    'Follow the exact output format from examples',
+    'Include confidence score',
+    'Identify key aspects mentioned',
+  ]);
+
+// Usage example
+const analysis = sentimentPrompt.toString({
+  text: 'Great features but the interface could be more intuitive',
+  language: 'English',
+});
+```
+
+----------------------------------------
+
+TITLE: Defining the Weather Agent (TypeScript)
+DESCRIPTION: TypeScript code defining the `weatherAgent` using `@mastra/core/agent`. It configures the agent with a name, instructions for its behavior (as a weather assistant), specifies the OpenAI model (`gpt-4o-mini`), and registers the `weatherTool`.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/docs/getting-started/installation.mdx#_snippet_3
+
+LANGUAGE: TypeScript
+CODE:
+```
+import { openai } from "@ai-sdk/openai";
+import { Agent } from "@mastra/core/agent";
+import { weatherTool } from "../tools/weather-tool";
+
+export const weatherAgent = new Agent({
+  name: "Weather Agent",
+  instructions: `You are a helpful weather assistant that provides accurate weather information.
+
+Your primary function is to help users get weather details for specific locations. When responding:
+- Always ask for a location if none is provided
+- If the location name isn't in English, please translate it
+- Include relevant details like humidity, wind conditions, and precipitation
+- Keep responses concise but informative
+
+Use the weatherTool to fetch current weather data.`,
+  model: openai("gpt-4o-mini"),
+  tools: { weatherTool }
+});
+```
+
+----------------------------------------
+
+TITLE: Merging Workflow Branches with .after() in Typescript
+DESCRIPTION: This snippet demonstrates how to merge multiple branches in a Mastra workflow using the `.after()` method. Step E is executed only after both Step B and Step D complete.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/reference/workflows/after.mdx#_snippet_1
+
+LANGUAGE: typescript
+CODE:
+```
+workflow
+  .step(stepA)
+    .then(stepB)
+  .step(stepC)
+    .then(stepD)
+  .after([stepB, stepD])  // Create a step that depends on multiple steps
+    .step(stepE);
+```
+
+----------------------------------------
+
+TITLE: Using AI SDK useChat Hook in React Component (TypeScript)
+DESCRIPTION: Shows a React component example demonstrating the usage of the `@ai-sdk/react` `useChat` hook. It initializes the hook with an API endpoint, manages the chat state (messages, input), and provides handlers for input changes and form submission to enable real-time chat interactions.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/docs/frameworks/ai-sdk.mdx#_snippet_2
+
+LANGUAGE: typescript
+CODE:
+```
+import { useChat } from '@ai-sdk/react';
+
+export function ChatComponent() {
+  const { messages, input, handleInputChange, handleSubmit } = useChat({
+    api: '/path-to-your-agent-stream-api-endpoint'
+  });
+
+  return (
+    <div>
+      {messages.map(m => (
+        <div key={m.id}>
+          {m.role}: {m.content}
+        </div>
+      ))}
+      <form onSubmit={handleSubmit}>
+        <input
+          value={input}
+          onChange={handleInputChange}
+          placeholder="Say something..."
+        />
+      </form>
+    </div>
+  );
+}
+```
+
+----------------------------------------
+
+TITLE: Defining Mastra Workflow with Steps and Events (TypeScript)
+DESCRIPTION: This snippet defines a Mastra workflow named 'document-request-workflow'. It includes four steps: `createRequest`, `processApproval`, `processDocument`, and `finalizeRequest`. It also defines two events, `approvalReceived` and `documentUploaded`, with Zod schemas for data validation. The steps are chained using `.step()`, `.afterEvent()`, and `.then()` to define the workflow execution flow.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/reference/workflows/events.mdx#_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { Workflow, Step } from '@mastra/core/workflows';
+import { z } from 'zod';
+
+// Define steps
+const createRequest = new Step({
+  id: 'createRequest',
+  execute: async () => ({ requestId: `req-${Date.now()}` }),
+});
+
+const processApproval = new Step({
+  id: 'processApproval',
+  execute: async ({ context }) => {
+    const approvalData = context.inputData.resumedEvent;
+    return {
+      approved: approvalData.approved,
+      approver: approvalData.approverName,
+    };
+  },
+});
+
+const processDocument = new Step({
+  id: 'processDocument',
+  execute: async ({ context }) => {
+    const documentData = context.inputData.resumedEvent;
+    return {
+      documentId: documentData.documentId,
+      processed: true,
+      type: documentData.documentType,
+    };
+  },
+});
+
+const finalizeRequest = new Step({
+  id: 'finalizeRequest',
+  execute: async ({ context }) => {
+    const requestId = context.steps.createRequest.output.requestId;
+    const approved = context.steps.processApproval.output.approved;
+    const documentId = context.steps.processDocument.output.documentId;
+
+    return {
+      finalized: true,
+      summary: `Request ${requestId} was ${approved ? 'approved' : 'rejected'} with document ${documentId}`
+    };
+  },
+});
+
+// Create workflow
+const requestWorkflow = new Workflow({
+  name: 'document-request-workflow',
+  events: {
+    approvalReceived: {
+      schema: z.object({
+        approved: z.boolean(),
+        approverName: z.string(),
+      }),
+    },
+    documentUploaded: {
+      schema: z.object({
+        documentId: z.string(),
+        documentType: z.enum(['invoice', 'receipt', 'contract']),
+      }),
+    },
+  },
+});
+
+// Build workflow
+requestWorkflow
+  .step(createRequest)
+  .afterEvent('approvalReceived')
+  .step(processApproval)
+  .afterEvent('documentUploaded')
+  .step(processDocument)
+  .then(finalizeRequest)
+  .commit();
+
+// Export workflow
+export { requestWorkflow };
+```
+
+----------------------------------------
+
+TITLE: Initialize Mastra Project using npx
+DESCRIPTION: Use the npx command to run the latest version of the create-mastra CLI tool directly without global installation. This is the recommended way to start a new Mastra project.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/packages/create-mastra/README.md#_snippet_0
+
+LANGUAGE: bash
+CODE:
+```
+npx create-mastra@latest
+```
+
+----------------------------------------
+
+TITLE: API Route with Direct Mastra Integration
+DESCRIPTION: Example of a Next.js API Route (`app/api/chat/route.ts`) that uses the directly initialized Mastra instance to stream a response from a Mastra agent based on a POST request body.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/docs/frameworks/next-js.mdx#_snippet_9
+
+LANGUAGE: typescript
+CODE:
+```
+import { mastra } from '@/mastra'
+import { NextResponse } from 'next/server'
+
+export async function POST(req: Request) {
+  const { city } = await req.json()
+  const agent = mastra.getAgent('weatherAgent')
+
+  const result = await agent.stream(`What's the weather like in ${city}?`)
+
+  return result.toDataStreamResponse()
+}
+```
+
+----------------------------------------
+
+TITLE: Initializing an AI Agent
+DESCRIPTION: Creates a new AI agent with specified name, instructions, and model configuration using OpenAI
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/packages/core/README.md#2025-04-22_snippet_1
+
+LANGUAGE: typescript
+CODE:
+```
+import { Agent } from '@mastra/core/agent';
+import { openai } from '@ai-sdk/openai';
+
+const agent = new Agent({
+  name: 'my-agent',
+  instructions: 'Your task-specific instructions',
+  model: openai('gpt-4o-mini'),
+  tools: {}, // Optional tools
+});
+```
+
+----------------------------------------
+
+TITLE: Initializing and Using OpenAI Realtime Voice in TypeScript
+DESCRIPTION: This code demonstrates how to initialize and use the OpenAIRealtimeVoice class, including connection setup, event handling, text-to-speech conversion, audio input processing, and proper disconnection. It shows both default initialization and configuration with specific parameters.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/reference/voice/openai-realtime.mdx#2025-04-22_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { OpenAIRealtimeVoice } from "@mastra/voice-openai-realtime";
+import { playAudio, getMicrophoneStream } from "@mastra/node-audio";
+
+// Initialize with default configuration using environment variables
+const voice = new OpenAIRealtimeVoice();
+
+// Or initialize with specific configuration
+const voiceWithConfig = new OpenAIRealtimeVoice({
+  chatModel: {
+    apiKey: 'your-openai-api-key',
+    model: 'gpt-4o-mini-realtime-preview-2024-12-17',
+    options: {
+      sessionConfig: {
+        turn_detection: {
+          type: 'server_vad',
+          threshold: 0.6,
+          silence_duration_ms: 1200
+        }
+      }
+    }
+  },
+  speaker: 'alloy'  // Default voice
+});
+
+// Establish connection
+await voice.connect();
+
+// Set up event listeners
+voice.on('speaker', ({ audio }) => {
+  // Handle audio data (Int16Array) pcm format by default
+  playAudio(audio);
+});
+
+voice.on('writing', ({ text, role }) => {
+  // Handle transcribed text
+  console.log(`${role}: ${text}`);
+});
+
+// Convert text to speech
+await voice.speak('Hello, how can I help you today?', {
+  speaker: 'echo'  // Override default voice
+});
+
+// Process audio input
+const microphoneStream = getMicrophoneStream();
+await voice.send(microphoneStream);
+
+// When done, disconnect
+voice.connect();
+```
+
+----------------------------------------
+
+TITLE: Adding a Step to a Workflow using Workflow.step() in Typescript
+DESCRIPTION: This code snippet demonstrates how to use the `Workflow.step()` method to add a new step to a workflow. It includes the step's ID, output schema (using Zod), and the asynchronous `execute` function that defines the step's logic. The step returns a simple object with a 'result' property.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/reference/workflows/step-function.mdx#_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+workflow.step({
+  id: "stepTwo",
+  outputSchema: z.object({
+    result: z.number()
+  }),
+  execute: async ({ context }) => {
+    return { result: 42 };
+  }
+});
+```
+
+----------------------------------------
+
+TITLE: Creating a Mastra Tool (TypeScript)
+DESCRIPTION: This snippet demonstrates how to define a custom tool using `createTool` from `@mastra/core/tools`. It includes defining an input schema using Zod, providing a description, and implementing the tool's execution logic within the `execute` function.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/docs/agents/using-tools-and-mcp.mdx#_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { createTool } from "@mastra/core/tools";
+import { z } from "zod";
+
+export const weatherInfo = createTool({
+  id: "Get Weather Information",
+  inputSchema: z.object({
+    city: z.string(),
+  }),
+  description: `Fetches the current weather information for a given city`,
+  execute: async ({ context: { city } }) => {
+    // Tool logic here (e.g., API call)
+    console.log("Using tool to fetch weather information for", city);
+    return { temperature: 20, conditions: "Sunny" }; // Example return
+  },
+});
+```
+
+----------------------------------------
+
+TITLE: Creating GlutenCheckerMetric Class (TypeScript)
+DESCRIPTION: Defines the `GlutenCheckerMetric` class, which extends `Metric`. This class serves as the main interface for evaluating gluten content. It uses the `RecipeCompletenessJudge` to perform the evaluation and provides a score (1 for gluten-free, 0 for containing gluten) and detailed information (gluten sources and reason).
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/examples/evals/custom-eval.mdx#_snippet_5
+
+LANGUAGE: typescript
+CODE:
+```
+export interface MetricResultWithInfo extends MetricResult {
+  info: {
+    reason: string;
+    glutenSources: string[];
+  };
+}
+
+export class GlutenCheckerMetric extends Metric {
+  private judge: GlutenCheckerJudge;
+  constructor(model: LanguageModel) {
+    super();
+
+    this.judge = new GlutenCheckerJudge(model);
+  }
+
+  async measure(output: string): Promise<MetricResultWithInfo> {
+    const { isGlutenFree, glutenSources } = await this.judge.evaluate(output);
+    const score = await this.calculateScore(isGlutenFree);
+    const reason = await this.judge.getReason({
+      isGlutenFree,
+      glutenSources,
+    });
+
+    return {
+      score,
+      info: {
+        glutenSources,
+        reason,
+      },
+    };
+  }
+
+  async calculateScore(isGlutenFree: boolean): Promise<number> {
+    return isGlutenFree ? 1 : 0;
+  }
+}
+```
+
+----------------------------------------
+
+TITLE: Creating a Next.js API Route with Mastra (TypeScript)
+DESCRIPTION: This snippet demonstrates how to create a Next.js API route (`/api/chat`) that uses the Mastra library. It receives a city name in the request body, interacts with a 'weatherAgent' via `mastra.getAgent`, streams a query to the agent, and returns the agent's response as a data stream using `toDataStreamResponse`. Requires `mastra` and `next/server`.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/docs/frameworks/next-js.mdx#_snippet_16
+
+LANGUAGE: typescript
+CODE:
+```
+import { mastra } from '@/mastra'
+import { NextResponse } from 'next/server'
+
+export async function POST(req: Request) {
+  const { city } = await req.json()
+  const agent = mastra.getAgent('weatherAgent')
+
+  const result = await agent.stream(`What's the weather like in ${city}?`)
+
+  return result.toDataStreamResponse()
+}
+```
+
+----------------------------------------
+
+TITLE: Advanced Document Chunking with Metadata Extraction in Typescript
+DESCRIPTION: This code snippet shows how to use the `.chunk()` function with advanced options, including specifying a markdown strategy, extracting headers, and generating summaries and keywords. It configures the chunking process to extract specific metadata based on the document's structure.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/reference/rag/chunk.mdx#2025-04-22_snippet_1
+
+LANGUAGE: typescript
+CODE:
+```
+import { MDocument } from '@mastra/rag';
+
+const doc = MDocument.fromMarkdown(`
+# Introduction
+This is a sample document that we want to split into chunks.
+
+## Section 1
+Here is the first section with some content.
+
+## Section 2 
+Here is another section with different content.
+`);
+
+// Markdown-specific chunking with header extraction
+const chunksWithMetadata = await doc.chunk({
+  strategy: 'markdown',
+  headers: [['#', 'title'], ['##', 'section']],
+  extract: {
+    summary: true, // Extract summaries with default settings
+    keywords: true  // Extract keywords with default settings
+  }
+});
+```
+
+----------------------------------------
+
+TITLE: Creating Workflow Steps with Mastra
+DESCRIPTION: This code snippet defines three steps (`stepOne`, `stepTwo`, `stepThree`) using the `Step` class from `@mastra/core/workflows`. Each step has an `execute` function that processes data and returns a result.  `zod` is used for schema validation in the workflow trigger. Data is passed between steps using the `context` object, accessing the output of previous steps. The `Workflow` class is used to initialize the workflow and define the `triggerSchema` using `zod` for input validation.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/examples/workflows/sequential-steps.mdx#2025-04-22_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { Step, Workflow } from "@mastra/core/workflows";
+import { z } from "zod";
+
+const stepOne = new Step({
+  id: "stepOne",
+  execute: async ({ context }) => ({
+    doubledValue: context.triggerData.inputValue * 2,
+  }),
+});
+
+const stepTwo = new Step({
+  id: "stepTwo",
+  execute: async ({ context }) => {
+    if (context.steps.stepOne.status !== "success") {
+      return { incrementedValue: 0 }
+    }
+
+    return { incrementedValue: context.steps.stepOne.output.doubledValue + 1 }
+  },
+});
+
+const stepThree = new Step({
+  id: "stepThree",
+  execute: async ({ context }) => {
+    if (context.steps.stepTwo.status !== "success") {
+      return { tripledValue: 0 }
+    }
+
+    return { tripledValue: context.steps.stepTwo.output.incrementedValue * 3 }
+  },
+});
+
+// Build the workflow
+const myWorkflow = new Workflow({
+  name: "my-workflow",
+  triggerSchema: z.object({
+    inputValue: z.number(),
+  }),
+});
+```
+
+----------------------------------------
+
+TITLE: Complete AI Workflow Implementation in TypeScript
+DESCRIPTION: Complete example showing a workflow system that uses two AI agents (copywriter and editor) to create and edit blog posts. The workflow processes a given topic through multiple steps.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/separate-long-code-block.md#2025-04-22_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { anthropic } from "@ai-sdk/anthropic";
+import { openai } from "@ai-sdk/openai";
+
+const copywriterAgent = new Agent({
+  name: "Copywriter",
+  instructions: "You are a copywriter agent that writes blog post copy.",
+  model: anthropic("claude-3-5-sonnet-20241022"),
+});
+
+const copywriterStep = new Step({
+  id: "copywriterStep",
+  execute: async ({ context }) => {
+    if (!context?.triggerData?.topic) {
+      throw new Error("Topic not found in trigger data");
+    }
+    const result = await copywriterAgent.generate(
+      `Create a blog post about ${context.triggerData.topic}`,
+    );
+    console.log("copywriter result", result.text);
+    return {
+      copy: result.text,
+    };
+  },
+});
+
+const editorAgent = new Agent({
+  name: "Editor",
+  instructions: "You are an editor agent that edits blog post copy.",
+  model: openai("gpt-4o-mini"),
+});
+
+const editorStep = new Step({
+  id: "editorStep",
+  execute: async ({ context }) => {
+    const copy = context?.getStepResult<{ copy: number }>(
+      "copywriterStep",
+    )?.copy;
+
+    const result = await editorAgent.generate(
+      `Edit the following blog post only returning the edited copy: ${copy}`,
+    );
+    console.log("editor result", result.text);
+    return {
+      copy: result.text,
+    };
+  },
+});
+
+const myWorkflow = new Workflow({
+  name: "my-workflow",
+  triggerSchema: z.object({
+    topic: z.string(),
+  }),
+});
+
+// Run steps sequentially.
+myWorkflow.step(copywriterStep).then(editorStep).commit();
+
+const { runId, start } = myWorkflow.createRun();
+
+const res = await start({
+  triggerData: { topic: "React JavaScript frameworks" },
+});
+console.log("Results: ", res.results);
+```
+
+----------------------------------------
+
+TITLE: Creating and Storing Embeddings
+DESCRIPTION: This code generates embeddings for the text chunks using the OpenAI embedding model and stores them in the vector database. It first creates an index in the vector store, then upserts the embeddings along with the associated metadata, enabling efficient similarity searches.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/examples/rag/rerank/rerank-rag.mdx#_snippet_6
+
+LANGUAGE: typescript
+CODE:
+```
+const { embeddings } = await embedMany({
+  model: openai.embedding("text-embedding-3-small"),
+  values: chunks.map(chunk => chunk.text),
+});
+
+const vectorStore = mastra.getVector("pgVector");
+await vectorStore.createIndex({
+  indexName: "embeddings",
+  dimension: 1536,
+});
+
+await vectorStore.upsert({
+  indexName: "embeddings",
+  vectors: embeddings,
+  metadata: chunks?.map((chunk: any) => ({ text: chunk.text })),
+});
+```
+
+----------------------------------------
+
+TITLE: Realtime Voice Event Handling in Mastra
+DESCRIPTION: This snippet demonstrates how to listen for events emitted by a real-time voice provider in a Mastra agent. It shows how to handle `speaking`, `writing`, and `error` events, including accessing audio data, transcribed text, and error messages. Dependencies include the agent instance (`agent`) with a connected real-time voice provider.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/docs/agents/adding-voice.mdx#_snippet_5
+
+LANGUAGE: typescript
+CODE:
+```
+// Listen for speech audio data sent from voice provider
+agent.voice.on("speaking", ({ audio }) => {
+  // audio contains ReadableStream or Int16Array audio data
+});
+
+// Listen for transcribed text sent from both voice provider and user
+agent.voice.on("writing", ({ text, role }) => {
+  console.log(`${role} said: ${text}`);
+});
+
+// Listen for errors
+agent.voice.on("error", (error) => {
+  console.error("Voice error:", error);
+});
+```
+
+----------------------------------------
+
+TITLE: Querying Vectors (TypeScript)
+DESCRIPTION: Demonstrates how to perform a similarity search against a vector index. The query method is asynchronous and requires the indexName, the queryVector, and the number of top results (topK). It also supports optional filter based on metadata and an includeVector flag to include the vectors in the results.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/reference/client-js/vectors.mdx#_snippet_5
+
+LANGUAGE: typescript
+CODE:
+```
+const results = await vector.query({
+  indexName: "my-index",
+  queryVector: [0.1, 0.2, 0.3],
+  topK: 10,
+  filter: { label: "first" }, // Optional: Metadata filter
+  includeVector: true // Optional: Include vectors in results
+});
+```
+
+----------------------------------------
+
+TITLE: Saving Messages to Memory (TypeScript)
+DESCRIPTION: Saves one or more messages to the memory system for a specific agent. Messages must include details like role, content, ID, threadId, creation date, and type.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/reference/client-js/memory.mdx#_snippet_7
+
+LANGUAGE: typescript
+CODE:
+```
+const savedMessages = await client.saveMessageToMemory({
+  messages: [
+    {
+      role: "user",
+      content: "Hello!",
+      id: "1",
+      threadId: "thread-1",
+      createdAt: new Date(),
+      type: "text"
+    }
+  ],
+  agentId: "agent-1"
+});
+```
+
+----------------------------------------
+
+TITLE: Upserting Vectors into Couchbase (JavaScript)
+DESCRIPTION: Inserts or updates documents containing vector embeddings and optional metadata into the specified Couchbase collection, returning the IDs of the affected documents.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/stores/couchbase/README.md#_snippet_10
+
+LANGUAGE: JavaScript
+CODE:
+```
+upsert({ indexName, vectors, metadata?, ids? })
+```
+
+----------------------------------------
+
+TITLE: Defining Copywriter Agent and Tool in TypeScript
+DESCRIPTION: This snippet defines a Copywriter agent using the Anthropic Claude model and creates a tool for generating blog post copy. It uses Zod for input and output schema validation.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/examples/agents/hierarchical-multi-agent.mdx#2025-04-22_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { openai } from "@ai-sdk/openai";
+import { anthropic } from "@ai-sdk/anthropic";
+
+const copywriterAgent = new Agent({
+  name: "Copywriter",
+  instructions: "You are a copywriter agent that writes blog post copy.",
+  model: anthropic("claude-3-5-sonnet-20241022"),
+});
+
+const copywriterTool = createTool({
+  id: "copywriter-agent",
+  description: "Calls the copywriter agent to write blog post copy.",
+  inputSchema: z.object({
+    topic: z.string().describe("Blog post topic"),
+  }),
+  outputSchema: z.object({
+    copy: z.string().describe("Blog post copy"),
+  }),
+  execute: async ({ context }) => {
+    const result = await copywriterAgent.generate(
+      `Create a blog post about ${context.topic}`,
+    );
+    return { copy: result.text };
+  },
+});
+```
+
+----------------------------------------
+
+TITLE: Defining Copywriter Agent and Tool in Typescript
+DESCRIPTION: This snippet defines a 'Copywriter' agent responsible for creating initial blog post content. It uses the Anthropic Claude model. A corresponding tool is created to allow other agents to call the copywriter with a specific topic and receive a blog post copy.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/examples/agents/hierarchical-multi-agent.mdx#_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { openai } from "@ai-sdk/openai";
+import { anthropic } from "@ai-sdk/anthropic";
+
+const copywriterAgent = new Agent({
+  name: "Copywriter",
+  instructions: "あなたはブログ投稿のコピーを書くコピーライターエージェントです。",
+  model: anthropic("claude-3-5-sonnet-20241022"),
+});
+
+const copywriterTool = createTool({
+  id: "copywriter-agent",
+  description: "ブログ投稿のコピーを書くためにコピーライターエージェントを呼び出します。",
+  inputSchema: z.object({
+    topic: z.string().describe("ブログ投稿のトピック"),
+  }),
+  outputSchema: z.object({
+    copy: z.string().describe("ブログ投稿のコピー"),
+  }),
+  execute: async ({ context }) => {
+    const result = await copywriterAgent.generate(
+      `Create a blog post about ${context.topic}`,
+    );
+    return { copy: result.text };
+  },
+});
+```
+
+----------------------------------------
+
+TITLE: Define Mastra Planning Agent (TypeScript)
+DESCRIPTION: Defines a Mastra Agent named 'planningAgent' that utilizes an OpenAI LLM (gpt-4o) to generate weather-based activity plans. The agent is configured with detailed instructions for formatting and content, acting as a local activities and travel expert.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/examples/workflows_vNext/conditional-branching.mdx#_snippet_0
+
+LANGUAGE: typescript
+CODE:
+```
+import { Agent } from '@mastra/core/agent';
+import { openai } from '@ai-sdk/openai';
+
+const llm = openai('gpt-4o');
+
+const planningAgent = new Agent({
+  name: 'planningAgent',
+  model: llm,
+  instructions: `
+        You are a local activities and travel expert who excels at weather-based planning. Analyze the weather data and provide practical activity recommendations.
+
+        📅 [Day, Month Date, Year]
+        ═══════════════════════════
+
+        🌡️ WEATHER SUMMARY
+        • Conditions: [brief description]
+        • Temperature: [X°C/Y°F to A°C/B°F]
+        • Precipitation: [X% chance]
+
+        🌅 MORNING ACTIVITIES
+        Outdoor:
+        • [Activity Name] - [Brief description including specific location/route]
+          Best timing: [specific time range]
+          Note: [relevant weather consideration]
+
+        🌞 AFTERNOON ACTIVITIES
+        Outdoor:
+        • [Activity Name] - [Brief description including specific location/route]
+          Best timing: [specific time range]
+          Note: [relevant weather consideration]
+
+        🏠 INDOOR ALTERNATIVES
+        • [Activity Name] - [Brief description including specific venue]
+          Ideal for: [weather condition that would trigger this alternative]
+
+        ⚠️ SPECIAL CONSIDERATIONS
+        • [Any relevant weather warnings, UV index, wind conditions, etc.]
+
+        Guidelines:
+        - Suggest 2-3 time-specific outdoor activities per day
+        - Include 1-2 indoor backup options
+        - For precipitation >50%, lead with indoor activities
+        - All activities must be specific to the location
+        - Include specific venues, trails, or locations
+        - Consider activity intensity based on temperature
+        - Keep descriptions concise but informative
+
+        Maintain this exact formatting for consistency, using the emoji and section headers as shown.
+      `,
+});
+
+export { planningAgent };
+```
+
+----------------------------------------
+
+TITLE: Creating a Mastra project using mastra CLI
+DESCRIPTION: These commands install the `mastra` CLI globally and then use it to create a new project. The installation command ensures the latest version of the CLI is used.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/docs/local-dev/creating-a-new-project.mdx#_snippet_1
+
+LANGUAGE: bash
+CODE:
+```
+npm install -g mastra@latest
+mastra create
+```
+
+----------------------------------------
+
+TITLE: Configuring Mastra Memory with Custom LibSQL and FastEmbed (TypeScript)
+DESCRIPTION: This snippet demonstrates how to provide a custom configuration for the Mastra memory system. It explicitly sets up `LibSQLStore` for storage, `LibSQLVector` for the vector database (both pointing to a database URL), and uses `fastembed` as the embedder. It also includes options for controlling message recall behavior, such as the number of recent messages and semantic search settings.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/ja/examples/memory/memory-with-libsql.mdx#_snippet_2
+
+LANGUAGE: typescript
+CODE:
+```
+import { openai } from "@ai-sdk/openai";
+import { LibSQLStore, LibSQLVector } from "@mastra/libsql";
+import { fastembed } from "@mastra/fastembed";
+
+const customMemory = new Memory({
+  storage: new LibSQLStore({
+    url: process.env.DATABASE_URL || "file:local.db",
+  }),
+  vector: new LibSQLVector({
+    connectionUrl: process.env.DATABASE_URL || "file:local.db",
+  }),
+  embedder: fastembed,
+  options: {
+    lastMessages: 10,
+    semanticRecall: {
+      topK: 3,
+      messageRange: 2,
+    },
+  },
+});
+
+const memoryAgent = new Agent({
+  name: "Memory Agent",
+  instructions:
+    "You are an AI agent with the ability to automatically recall memories from previous interactions. You may have conversations that last hours, days, months, or years. If you don't know it already you should ask for the users name and some info about them.",
+  model: openai("gpt-4o-mini"),
+  memory: customMemory,
+});
+```
+
+----------------------------------------
+
+TITLE: Creating Separate Steps for a Mastra Workflow
+DESCRIPTION: This snippet shows how to define steps independently before adding them to a workflow. It demonstrates creating standalone step objects with their own execution logic and output schemas, then linking them together in a workflow. This approach enhances modularity and reusability of step definitions.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/docs/src/content/en/docs/workflows/steps.mdx#2025-04-22_snippet_1
+
+LANGUAGE: typescript
+CODE:
+```
+import { Step, Workflow, Mastra } from "@mastra/core";
+import { z } from "zod";
+
+// Define steps separately
+const stepOne = new Step({
+  id: "stepOne",
+  outputSchema: z.object({
+    doubledValue: z.number(),
+  }),
+  execute: async ({ context }) => ({
+    doubledValue: context.triggerData.inputValue * 2,
+  }),
+});
+
+const stepTwo = new Step({
+  id: "stepTwo",
+  outputSchema: z.object({
+    incrementedValue: z.number(),
+  }),
+  execute: async ({ context }) => {
+    if (context.steps.stepOne.status !== "success") {
+      return { incrementedValue: 0 };
+    }
+    return { incrementedValue: context.steps.stepOne.output.doubledValue + 1 };
+  },
+});
+
+// Build the workflow
+const myWorkflow = new Workflow({
+  name: "my-workflow",
+  triggerSchema: z.object({
+    inputValue: z.number(),
+  }),
+});
+
+myWorkflow.step(stepOne).then(stepTwo);
+myWorkflow.commit();
+
+// Register the workflow with Mastra
+export const mastra = new Mastra({
+  workflows: { myWorkflow },
+});
+```
+
+----------------------------------------
+
+TITLE: Creating a Step with createStep (TypeScript)
+DESCRIPTION: Defines a workflow step using `createStep`, specifying its unique ID, description, input/output/resume/suspend schemas (using Zod), and the asynchronous `execute` function. The `execute` function receives a context object providing access to input data, other step results, workflow initial data, and runtime context.
+SOURCE: https://github.com/mastra-ai/mastra/blob/main/packages/core/src/workflows/vNext/README.md#_snippet_1
+
+LANGUAGE: TypeScript
+CODE:
+```
+const myStep = createStep({
+  id: 'my-step',
+  description: 'Does something useful',
+  inputSchema: z.object({
+    inputValue: z.string(),
+  }),
+  outputSchema: z.object({
+    outputValue: z.string(),
+  }),
+  resumeSchema: z.object({
+    resumeValue: z.string(),
+  }),
+  suspendSchema: z.object({
+    suspendValue: z.string(),
+  }),
+  execute: async ({ inputData, mastra, getStepResult, getInitData, runtimeContext }) => {
+    const otherStepOutput = getStepResult(step2);
+    const initData = getInitData<typeof workflow>(); // typed as the workflow input schema
+    return {
+      outputValue: `Processed: ${inputData.inputValue}, ${initData.startValue} (runtimeContextValue: ${runtimeContext.get('runtimeContextValue')})`,
+    };
+  },
+});
+```

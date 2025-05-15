@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grafik Analiz Aracı</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container mt-5">
+        <div class="row">
+            <div class="col-md-12 text-center mb-4">
+                <h1>Grafik Analiz Aracı</h1>
+                <p class="lead">Grafik görüntülerini veya PDF dosyalarını yükleyin ve yapay zeka destekli analiz alın.</p>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="card-title">Dosya Yükleme</h5>
+                    </div>
+                    <div class="card-body">
+                        <form id="uploadForm">
+                            <div class="mb-3">
+                                <label for="fileInput" class="form-label">Grafik veya PDF Dosyası Seçin</label>
+                                <input class="form-control" type="file" id="fileInput" accept=".jpg,.jpeg,.png,.gif,.bmp,.webp,.pdf">
+                                <div class="form-text">Desteklenen formatlar: JPG, PNG, GIF, BMP, WEBP, PDF</div>
+                            </div>
+                            <div class="d-grid gap-2">
+                                <button type="button" id="uploadButton" class="btn btn-primary">Yükle ve Analiz Et</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="card-title">Önizleme</h5>
+                    </div>
+                    <div class="card-body text-center">
+                        <div id="previewContainer">
+                            <p class="text-muted">Dosya yüklediğinizde burada önizleme görünecektir.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="card-title mb-0">Analiz Sonuçları</h5>
+                        <div class="spinner-border text-primary d-none" id="loadingSpinner" role="status">
+                            <span class="visually-hidden">Yükleniyor...</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div id="resultsContainer">
+                            <p class="text-muted">Dosya yükleyip analiz ettiğinizde sonuçlar burada görünecektir.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
