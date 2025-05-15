@@ -16,7 +16,7 @@ const __dirname = path.dirname(__filename);
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://2.59.119.114:52026/MastraMonger';
 
 // Telegram Bot Token
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '7138133334:AAGZDwfhKm-E3pqcCA7Cavrsv1-vIi1YI24';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 'YOUR_TELEGRAM_TOKEN';
 
 // Mastra API URL
 const MASTRA_API_URL = process.env.MASTRA_API_URL || 'http://localhost:4111/api';
@@ -44,7 +44,7 @@ app.get('/chat', (req, res) => {
 });
 
 // Gemini API anahtarı
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "AIzaSyAlcDx_dBOo78Mhj-rL6MaZOCnYk0LcUkY";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "YOUR_GEMINI_API_KEY";
 
 // Mastra API'sine proxy
 app.post('/api/agents/:agentName/generate', async (req, res) => {
