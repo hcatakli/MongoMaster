@@ -24,7 +24,7 @@ let isConnected = false;
 const userStates = {};
 
 // Telegram Bot Token
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '7138133334:AAGZDwfhKm-E3pqcCA7Cavrsv1-vIi1YI24';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 'YOUR_TELEGRAM_BOT_TOKEN';
 
 // Mastra API URL
 const MASTRA_API_URL = 'http://localhost:4111/api';
