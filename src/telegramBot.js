@@ -28,7 +28,7 @@ const userStates = {};
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '7138133334:AAGZDwfhKm-E3pqcCA7Cavrsv1-vIi1YI24';
 
 // Gemini API anahtarı
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "AIzaSyAlcDx_dBOo78Mhj-rL6MaZOCnYk0LcUkY";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "YOUR_GEMINI_API_KEY";
 
 
 // Mastra API URL - Mastra'nın varsayılan portu 3111'dir
