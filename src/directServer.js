@@ -34,7 +34,7 @@ app.get('/chat', (req, res) => {
 // Not: Bu bir örnek anahtardır ve çalışmayacaktır
 // Kendi API anahtarınızı oluşturup buraya eklemeniz gerekiyor
 // https://aistudio.google.com/ adresinden bir anahtar oluşturabilirsiniz
-const GEMINI_API_KEY = "AIzaSyAlcDx_dBOo78Mhj-rL6MaZOCnYk0LcUkY";
+const GEMINI_API_KEY = "YOUR_GEMINI_API_KEY";
 
 // Grafik analizi için API endpoint'i
 app.post('/api/analyze-graph', async (req, res) => {
