@@ -31,8 +31,7 @@ app.get('/chat', (req, res) => {
 });
 
 // Gemini API anahtarı - gerçek bir anahtar ile değiştirilmeli
-const GEMINI_API_KEY = "AIzaSyAlcDx_dBOo78Mhj-rL6MaZOCnYk0LcUkY"; // Bu anahtarı gerçek bir anahtarla değiştirin
-
+const GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"
 // Mastra API'sine proxy
 app.post('/api/agents/:agentName/generate', async (req, res) => {
   try {
