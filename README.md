@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Chart Recognizer with Telegram Bot
 
 Bu proje, grafik görsellerini tanıyan ve analiz eden bir web uygulaması ve Telegram botu içerir.
@@ -91,3 +92,6 @@ npm run dev
 ## Lisans
 
 ISC
+=======
+# MongoMaster
+>>>>>>> 7266ce7060726274afdd85d2712a04660b5fafae
