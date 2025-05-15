@@ -63,6 +63,7 @@ npm run combined
 
 - `/start` - Botu başlatır
 - `/help` - Yardım mesajını gösterir
+- `/grafik` - Grafik çizimi sağlar
 
 ## Teknik Detaylar
 
